@@ -7,11 +7,10 @@
 /* Voiceprint (speaker identification + online clustering), fully on-board.
  *
  * The embedding is hand-built on top of esp-dl's Fbank: 20 MFCC mean + 20 MFCC
- * std + 3 pitch statistics -> 43 dims, standardised and L2-normalised (see
- * app_vp_tables.h for how it was derived).  It is computed from the pre-AFE
- * microphone signal (CONFIG_VOICE_VP_INPUT_RAW) and the MU/SD tables were
- * re-fitted on board recordings on 2026-10-19: same speaker 0.643 +- 0.220,
- * different speaker -0.142 +- 0.285 (d'=3.1, AUC 0.98).
+ * std + 3 pitch statistics -> 43 dims, standardised, LDA-weighted and
+ * L2-normalised (see app_vp_tables.h).  It is computed from the pre-AFE
+ * microphone signal (CONFIG_VOICE_VP_INPUT_RAW); the tables were fitted on
+ * audio recorded through this board's own microphone chain.
  *
  * Enrolled people are frozen references (never updated, never auto-merged).
  * Unknown voices are buffered as pending candidates; two consistent hits
@@ -65,10 +64,9 @@ const char *speaker_id_identify_or_cluster(const int16_t *pcm, size_t samples);
 /* Forget the anonymous roles (start labelling from 人1 again). */
 void speaker_id_reset_clusters(void);
 
-/* Calibration aid: when enabled, each extracted feature vector is printed once
- * as "VPVEC <40 unstandardised MFCC stats> <3 pitch stats>" on the console.
- * Used to re-fit the standardisation tables from board-recorded audio (serial
- * command "vpvec on|off"). */
+/* Diagnostic aid: when enabled, each extracted feature vector is printed once
+ * as "VPVEC <40 unstandardised MFCC stats> <3 pitch stats>" on the console
+ * (serial command "vpvec on|off"). */
 void speaker_id_set_dump_raw(bool on);
 bool speaker_id_dump_raw(void);
 

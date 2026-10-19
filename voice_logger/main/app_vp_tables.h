@@ -6,23 +6,20 @@
 #pragma once
 /* Voiceprint feature tables.
  *
- * DCT matrix: from the offline lab in E:\esp\_vp_lab (SiliconFlow CosyVoice2
- * corpus, 8 voices x 3 texts; see that folder's README).
- * Standardisation tables (MU/SD): RE-FITTED 2026-10-19 on board-recorded audio,
- * from 44 raw-mic utterances covering 6 TTS voices (see
- * E:\esp\_diag\vp\calib\CALIB_REPORT.md and new_tables.h).  The voiceprint
- * now runs on the pre-AFE microphone signal, so the old clean-TTS tables were
- * one domain away from what the board actually sees.
+ * The DCT matrix turns the esp-dl 80-band log-mel output into 20 cepstral
+ * coefficients.  The standardisation tables (MU/SD) and the LDA-style
+ * per-dimension weights were fitted on audio recorded through this board's own
+ * microphone chain; the voiceprint runs on the pre-AFE microphone signal.
  *
- * Feature: 43 dims = 20 MFCC mean + 20 MFCC std (from the esp-dl 80-band log-mel
- * output) + 3 pitch stats (F0 mean/std in semitones re 100 Hz, voiced ratio).
- * MFCC stats are z-scored with the tables below, pitch with the pitch tables
- * (recalibrated for the firmware's 8 kHz direct-autocorrelation pitch estimator),
- * the two blocks are L2-normalised and mixed 90/10 before the final L2 norm.
+ * Feature: 43 dims = 20 MFCC mean + 20 MFCC std + 3 pitch stats (F0 mean/std in
+ * semitones re 100 Hz, voiced ratio).  MFCC stats are z-scored with the tables
+ * below, pitch with the pitch tables (tuned for the firmware's 8 kHz
+ * direct-autocorrelation pitch estimator), the two blocks are L2-normalised and
+ * mixed 90/10 before the final L2 norm.
  *
  * Only app_speaker_id.cpp includes this file. */
 
-/* voiceprint feature tables - DCT from _vp_lab; MU/SD re-fitted on board raw-mic audio (2026-10-19) */
+/* voiceprint feature tables */
 /* Feature: 43-dim = 20 MFCC mean + 20 MFCC std + 3 pitch stats, standardized then L2-normalised. */
 /* STEP 1: mel->cepstra DCT-II matrix, 20 x 80 (precomputed). */
 static const float VP_DCT[20][80] = {
@@ -52,4 +49,14 @@ static const float VP_MFCC_MU[40] = {-70.101480f, -6.192423f, -4.394084f, -4.645
 static const float VP_MFCC_SD[40] = {3.257121f, 1.712852f, 1.164224f, 1.217818f, 0.900625f, 0.850770f, 0.817073f, 0.715836f, 0.528383f, 0.472419f, 0.655874f, 0.583130f, 0.503260f, 0.381187f, 0.412160f, 0.441887f, 0.382589f, 0.548353f, 0.509419f, 0.628398f, 1.801576f, 1.284154f, 0.715460f, 0.657241f, 0.501017f, 0.365694f, 0.330515f, 0.322531f, 0.287843f, 0.170024f, 0.188826f, 0.239654f, 0.158902f, 0.216105f, 0.247721f, 0.267218f, 0.363473f, 0.474156f, 0.386227f, 0.423423f};
 static const float VP_PITCH_MU[3] = {10.003484f, 3.453900f, 0.353961f};
 static const float VP_PITCH_SD[3] = {5.475321f, 1.286070f, 0.096631f};
+
+/* STEP 3: LDA-style per-dimension weights, fitted on device-recorded samples.
+ * The MFCC mean dim c and the MFCC std dim VP_MFCC+c share the same weight.
+ * Applied after the z-score step and before the block L2 norm; mean(w)=1, so
+ * the pitch/block mixing scale is unchanged.  The weighting suppresses
+ * dimensions that vary strongly within one speaker and boosts the ones that
+ * separate speakers. */
+static const float VP_LDA_W[40] = {0.133094f, 0.213779f, 0.531991f, 0.337615f, 0.513518f, 1.012284f, 0.917840f, 0.914469f, 1.133992f, 1.398535f, 1.169202f, 1.301283f, 1.356093f, 1.590034f, 1.149069f, 1.160495f, 1.279841f, 1.392845f, 1.273702f, 1.220319f, 0.133094f, 0.213779f, 0.531991f, 0.337615f, 0.513518f, 1.012284f, 0.917840f, 0.914469f, 1.133992f, 1.398535f, 1.169202f, 1.301283f, 1.356093f, 1.590034f, 1.149069f, 1.160495f, 1.279841f, 1.392845f, 1.273702f, 1.220319f};
+static const float VP_LDA_PITCH_W[3] = {0.551800f, 0.612050f, 1.836150f};
+
 /* pitch units: f0 mean/std in semitones re 100 Hz, voiced ratio. */

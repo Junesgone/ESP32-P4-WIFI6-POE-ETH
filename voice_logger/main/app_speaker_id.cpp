@@ -20,22 +20,15 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
-/* Lightweight on-board voiceprint, redesigned after an offline lab (see
- * E:\esp\_vp_lab and main/app_vp_tables.h for the numbers).
+/* Lightweight on-board voiceprint.
  *
- * The esp-dl speaker_verification TDNN is unusable on this board (all-zero
- * embedding), and the first hand-made embedding - per-band mean+std of the 80
- * log-mel bands - turned out to be useless too: different speakers scored
- * 0.975+-0.020 against each other while the same speaker scored 0.997+-0.002.
- * Every voice therefore matched "主人" at 0.96-0.99 and the adaptive threshold
- * + centroid EMA slowly folded everybody into it.
- *
- * The replacement keeps the esp-dl Fbank but builds a 43-dim embedding:
+ * Feature: 43 dims built on top of esp-dl's Fbank -
  *   20 MFCC mean + 20 MFCC std (DCT-II of the log-mel frames)
- *   + 3 pitch stats (F0 mean/std in semitones re 100 Hz, voiced ratio at 8 kHz)
- * The 40 MFCC stats are z-scored with a hard-coded corpus table, the pitch
- * stats likewise, the two blocks are L2-normalised and mixed 90/10.
- * Measured on the lab corpus: same voice 0.737, different voice -0.114.
+ *   + 3 pitch stats (F0 mean/std in semitones re 100 Hz, voiced ratio at 8 kHz).
+ * The 40 MFCC stats are z-scored with a hard-coded device-fitted table and
+ * LDA-weighted, the pitch stats likewise; the two blocks are L2-normalised and
+ * mixed 90/10.  The embedding is computed from the pre-AFE microphone signal
+ * (see CONFIG_VOICE_VP_INPUT_RAW), not from the echo-cancelled ASR stream.
  *
  * Clustering is a small online state machine:
  *   - accept into the closest role at cosine >= VP_T_ACCEPT
@@ -308,6 +301,10 @@ static bool build_feature(const int16_t *pcm, size_t samples, float *out)
         }
         float raw_m = (m - VP_MFCC_MU[c]) / VP_MFCC_SD[c];
         float raw_s = (sqrtf(var) - VP_MFCC_MU[VP_MFCC + c]) / VP_MFCC_SD[VP_MFCC + c];
+        /* LDA-style weighting: suppress dimensions that vary a lot within a
+         * speaker, boost the discriminative ones (fitted on board recordings). */
+        raw_m *= VP_LDA_W[c];
+        raw_s *= VP_LDA_W[VP_MFCC + c];
         zb[c] = raw_m;
         zb[VP_MFCC + c] = raw_s;
         nb += raw_m * raw_m + raw_s * raw_s;
@@ -320,10 +317,9 @@ static bool build_feature(const int16_t *pcm, size_t samples, float *out)
     float ps[VP_PITCH_DIM];
     pitch_stats(pcm, samples, ps);
 
-    /* Calibration hook: emit the fourty MFCC mean/std values and the three
-     * pitch stats *before* standardisation, so a host script can refit the
-     * VP_MFCC_MU/SD + VP_PITCH_MU/SD tables for this board's microphone chain
-     * (AFE output vs raw mic differ a lot).  Serial command "vpvec on". */
+    /* Diagnostic hook: emit the 40 MFCC mean/std values and the 3 pitch stats
+     * before standardisation, for feature-table calibration.  Serial command
+     * "vpvec on". */
     if (s_dump_raw) {
         char line[768];
         size_t off = (size_t)snprintf(line, sizeof(line), "VPVEC");
@@ -348,6 +344,8 @@ static bool build_feature(const int16_t *pcm, size_t samples, float *out)
     float np = 0.0f;
     for (int k = 0; k < VP_PITCH_DIM; k++) {
         zp[k] = (ps[k] - VP_PITCH_MU[k]) / VP_PITCH_SD[k];
+        /* LDA-style pitch weighting (fitted with the MFCC weights). */
+        zp[k] *= VP_LDA_PITCH_W[k];
         np += zp[k] * zp[k];
     }
     np = sqrtf(np);
@@ -1050,7 +1048,7 @@ const char *speaker_id_identify_or_cluster(const int16_t *pcm, size_t samples)
 void speaker_id_set_dump_raw(bool on)
 {
     s_dump_raw = on;
-    ESP_LOGW(TAG, "VPVEC raw-feature dump %s", on ? "enabled" : "disabled");
+    ESP_LOGW(TAG, "raw-feature dump %s", on ? "enabled" : "disabled");
 }
 
 bool speaker_id_dump_raw(void)

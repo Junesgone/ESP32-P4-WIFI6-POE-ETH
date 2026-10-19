@@ -70,9 +70,8 @@ static int16_t *s_preroll;          /* PREROLL_FRAMES * s_frame, AFE output */
 static int16_t *s_utt;              /* UTT_MAX_SAMPLES, AFE output (ASR/storage) */
 static size_t   s_utt_len;
 /* Parallel copy of the same audio taken BEFORE the AFE.  The voiceprint is
- * computed from this one: AEC/NS/AGC reshape the spectrum enough to flatten
- * speaker timbre (measured 2026-10-19: cross-speaker cosine 0.52-0.71 on AFE
- * output vs a clean separation expected from the offline lab). */
+ * computed from this one: AEC/NS/AGC reshape the spectrum and flatten speaker
+ * timbre, so the raw microphone signal is the better input for it. */
 static int16_t *s_preroll_raw;
 static int16_t *s_utt_raw;
 static size_t   s_utt_raw_len;
@@ -1378,8 +1377,8 @@ void app_main(void)
              *
              * So while a reply is coming out of the speaker the microphone is
              * discarded and the VAD reset.  Barge-in needs the reference delay
-             * measured and aec_filter_length raised to match; until then this
-             * is the correct trade. */
+             * measured and the aec_filter_length raised to match; until then
+             * this is the correct trade. */
             if (tts_speaking() ||
                 esp_timer_get_time() < s_suppress_until_us) {
                 s_preroll_count = 0;

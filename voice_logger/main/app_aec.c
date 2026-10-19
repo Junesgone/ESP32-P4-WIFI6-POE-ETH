@@ -55,12 +55,9 @@ esp_err_t aec_init(void)
     cfg->vad_init = false;
     cfg->wakenet_init = false;
     /* AGC instead of a fixed ES8311 gain: it lifts quiet speech without
-     * clipping loud speech, and it is what the ASR uplink actually wants.
-     * Measured before: speech peaks 1900-5900 vs a noise floor that drifts
-     * between 20 and 950, so a fixed boost would either clip or be useless. */
-    /* Compile-time only: the AFE's runtime AGC/NS ops are not usable in this
-     * configuration.  Measured: turning AGC off did not improve the voiceprint
-     * (cross-speaker cosine actually rose slightly), so both default to on. */
+     * clipping loud speech, which is what the ASR uplink wants.
+     * Compile-time only: the AFE's runtime AGC/NS ops are not usable in this
+     * configuration, so both are selected at build time and default to on. */
     cfg->agc_init = CONFIG_VOICE_AEC_AGC;
     cfg->ns_init = CONFIG_VOICE_AEC_NS;
     cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;

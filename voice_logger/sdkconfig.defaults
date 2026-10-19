@@ -81,11 +81,14 @@ CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
 CONFIG_FLASH_SPEAKER_VERIFICATION=y
 CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_PARTITION=y
 # Voiceprint accept threshold (cosine x100) for the 43-dim MFCC+pitch
-# embedding, computed from the PRE-AFE microphone signal.  Tables re-fitted on
-# board raw-mic recordings 2026-10-19: same speaker 0.643 +- 0.220, different
-# speaker -0.142 +- 0.285 (d'=3.1, AUC 0.98).  30 is the offline optimum; the
-# board logs every score and the top1-top2 gap, so tune from real recordings.
-CONFIG_VOICE_SPEAKER_THRESHOLD=30
+# embedding, computed from the PRE-AFE microphone signal, standardisation
+# re-fitted on board raw-mic recordings and LDA-style dimension weights added
+# (pairwise EER ~7.7%).  A high threshold 45 + margin 10 is what keeps six
+# similar same-gender voices from merging (offline clustering replay); 30 would
+# over-merge 6-speaker sessions.  The board logs every score and the top1-top2
+# gap, so tune from real recordings if needed.
+CONFIG_VOICE_SPEAKER_THRESHOLD=45
+CONFIG_VOICE_SPEAKER_MARGIN_X100=10
 # 100 clips the ES8311 DAC into the NS4150B (audible breakup); 90 is loud
 # and still clean.  Runtime-adjustable through the set_volume tool.
 CONFIG_VOICE_SPEAKER_VOLUME=90

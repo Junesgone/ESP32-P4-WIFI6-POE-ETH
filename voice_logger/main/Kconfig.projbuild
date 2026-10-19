@@ -98,23 +98,21 @@ menu "Voice logger configuration"
 
     # The AFE's runtime enable_agc/disable_agc ops are NULL in this configuration
     # (and afe_enable_ns() only warns "NS is not initialized"), so AGC/NS can only
-    # be switched at compile time.  Measured 2026-10-19 on a 6-voice TTS stimulus:
-    # turning AGC off did NOT improve speaker separation (cross-speaker cosine
-    # 0.52-0.71 -> 0.56-0.74), so both stay on by default.
+    # be switched at compile time; both stay on by default.
     config VOICE_AEC_AGC
         bool "AFE AGC (automatic gain control)"
         default y
         help
             Level-normalises the microphone signal before ASR.  Turning it off
-            lowers the input by ~6-10 dB and, on this board, does not make the
-            voiceprint more discriminative.
+            lowers the input level by ~6-10 dB; the voiceprint uses the pre-AFE
+            signal either way.
 
     config VOICE_AEC_NS
         bool "AFE NS (WebRTC noise suppression)"
         default y
         help
-            Spectral denoising for the ASR uplink.  Kept on by default; see the
-            voiceprint experiments in ARCHITECTURE.md before turning it off.
+            Spectral denoising for the ASR uplink.  Kept on by default: it helps
+            recognition and the voiceprint does not use the AFE output.
 
     config VOICE_BLE
         bool "Bluetooth (BLE) via the on-board ESP32-C6"
@@ -130,35 +128,32 @@ menu "Voice logger configuration"
     config VOICE_SPEAKER_THRESHOLD
         int "Voiceprint accept threshold (cosine x100)"
         range 0 100
-        default 30
+        default 45
         help
             Cosine similarity (x100) above which an utterance is accepted into
-            the closest existing role.  Since 2026-10-19 the embedding is
-            computed from the pre-AFE microphone signal and the standardisation
-            tables were re-fitted on board recordings (44 utterances, 6 TTS
-            voices): same speaker 0.643 +- 0.220, different speaker
-            -0.142 +- 0.285, d'=3.1, AUC 0.98.  The old feature measured
-            cross-speaker cosine 0.5-0.9 and needed the high threshold.
-            30 is the offline optimum (EER 26, centroid classification 100%);
-            roles that do not match go through a 2-hit pending buffer before
+            the closest existing role.  The embedding is computed from the
+            pre-AFE microphone signal, standardised with device-fitted tables
+            and LDA-weighted.  45 (with margin 10) is high enough to keep
+            several similar same-gender voices from collapsing into one
+            anonymous role; lower values merge speakers more eagerly.
+            Roles that do not match go through a 2-hit pending buffer before
             人N is created; explicitly enrolled people are never modified.
-            The board logs every score and the top1-top2 gap, so tune from real
-            recordings if needed.
+            The board logs every score and the top1-top2 gap, so this can be
+            tuned from real recordings.
 
     config VOICE_VP_INPUT_RAW
         bool "Voiceprint uses the pre-AFE microphone signal"
         default y
         help
             Compute the speaker embedding from the raw microphone block that is
-            captured in parallel with the AFE output.  The AFE's AEC/NS/AGC
-            reshape the spectrum and, measured 2026-10-19, flattened speaker
-            timbre on the processed signal; ASR still uses the AFE output.
-            Turn this off to reproduce the old AFE-input voiceprint for A/B.
+            captured in parallel with the AFE output.  AEC/NS/AGC reshape the
+            spectrum and flatten speaker timbre on the processed signal; ASR
+            still uses the AFE output.  Turn this off to use the AFE signal.
 
     config VOICE_SPEAKER_MARGIN_X100
         int "Voiceprint relative margin gate (cosine x100, 0 = off)"
         range 0 100
-        default 0
+        default 10
         help
             A match must beat the runner-up role by at least this much, in
             addition to passing CONFIG_VOICE_SPEAKER_THRESHOLD.  Different
@@ -187,21 +182,12 @@ menu "Voice logger configuration"
             90 is loud and still clean.  Can also be changed at runtime by the
             set_volume tool when you ask 小新 to do it.
 
-    config VOICE_BRIDGE_URL
-        string "Bridge base URL (no trailing slash)"
-        default "http://192.168.0.100:8077"
-        help
-            LAN address of the local bridge (tools/bridge/deepseek_bridge.py).
-            The bridge runs faster-whisper for ASR and a local TTS, and calls
-            the DeepSeek Chat API for the actual answer.  Audio never leaves the
-            LAN - only the recognised text is sent to DeepSeek.
-
     config VOICE_PLAYBACK
         bool "Play each captured utterance back through the speaker"
-        default y
+        default n
         help
-            Useful to prove the codec + amplifier path without a camera or a
-            network round trip.
+            Bring-up utility: plays the captured utterance back through the
+            codec/amplifier path.  Off by default.
 
     # ---------------------------------------------------------------------
     # Cloud neural TTS.  The on-board ESP-SR engine is concatenative and
