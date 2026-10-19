@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.0.2 — 2026-10-19
+
+Maintenance release. No functional changes to the firmware.
+
+### Changed
+
+- Firmware version bumped to **0.0.2** (boot banner and release tag).
+- Voiceprint defaults confirmed: accept threshold 0.45, relative margin 0.10.
+- Repository clean-up and documentation refresh for the public release.
+
 ## v0.0.1 — 2026-10-19
 
 Initial public release of the ESP32-P4-WIFI6-POE-ETH voice assistant ("小新").

@@ -83,7 +83,7 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 
 ---
 
-## 3. Features and current state (v0.0.1)
+## 3. Features and current state (v0.0.2)
 
 | Area | State |
 |---|---|
@@ -212,7 +212,7 @@ voiceprint diagnostics) are documented inline in `voice_logger/main/main.c`.
 
 ## 7. Version and releases
 
-Current version: **v0.0.1** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.2** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 
