@@ -1,0 +1,302 @@
+menu "Voice logger configuration"
+
+    config ESP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+        help
+            SSID of the 2.4 GHz access point.  The on-board ESP32-C6 radio is
+            2.4 GHz only, so a 5 GHz-only SSID will never connect.
+
+    config ESP_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "mypassword"
+
+    config VOICE_VAD_START_RMS
+        int "VAD: RMS threshold to open an utterance"
+        default 600
+        help
+            Raw 16-bit RMS of one 20 ms frame.  Quiet room noise floor sits
+            around 30-120; normal speech at arm's length is 600-3000.
+
+    config VOICE_VAD_HANGOVER_MS
+        int "VAD: trailing silence that closes an utterance (ms)"
+        default 700
+
+    config VOICE_VAD_MIN_SPEECH_MS
+        int "VAD: minimum speech length to keep an utterance (ms)"
+        default 300
+
+    config VOICE_VAD_MAX_UTTERANCE_MS
+        int "VAD: hard cut-off for a single utterance (ms)"
+        default 20000
+
+    config VOICE_PREROLL_MS
+        int "Audio kept before speech is detected (ms)"
+        default 300
+
+    config ASR_API_KEY
+        string "ASR API key"
+        default ""
+        help
+            Key for the speech-to-text endpoint.  With the default backend that
+            is siliconflow.cn (model FunAudioLLM/SenseVoiceSmall, a Chinese ASR
+            model).  Keep it in config/asr.key, not in the shared source tree.
+
+    config ASR_BASE_URL
+        string "ASR endpoint URL"
+        default "https://api.siliconflow.cn/v1/audio/transcriptions"
+        help
+            OpenAI-compatible /audio/transcriptions endpoint.  Point this at a
+            LAN box running FunASR/Paraformer if you would rather keep audio
+            off the internet - the board does not care which one it is.
+
+    config ASR_MODEL
+        string "ASR model name"
+        default "FunAudioLLM/SenseVoiceSmall"
+
+    config DEEPSEEK_API_KEY
+        string "DeepSeek API key"
+        default ""
+        help
+            Key from platform.deepseek.com.  Keep it in a local defaults file
+            (config/deepseek.defaults) rather than in the shared source tree.
+
+    config DEEPSEEK_MODEL
+        string "DeepSeek model"
+        default "deepseek-flash"
+
+    config DEEPSEEK_MAX_TOKENS
+        int "Max reply tokens"
+        default 400
+
+    config DEEPSEEK_TEMPERATURE_X100
+        int "LLM temperature x100 (higher = more varied phrasing)"
+        range 0 200
+        default 80
+        help
+            The spoken persona needs some variation to stop sounding templated;
+            0.80 was picked by an A/B of the persona prompt (0.9 drifts into
+            formatting quirks, 0.7 stays a bit stiff).  Replies
+            are spoken, so this only affects wording, not any control path.
+
+    # The spoken persona lives in main/app_persona.h - it is a multi-line block
+    # of style rules with examples, far easier to review as source than as one
+    # escaped Kconfig string.
+
+    config VOICE_AEC
+        bool "Echo cancellation (ESP-SR AFE, full duplex)"
+        default y
+        help
+            Feeds the microphone plus a playback reference into ESP-SR's AFE so
+            the board can hear you while it is speaking.  Needs the esp-sr
+            models in the "model" partition (idf.py flash writes them).
+            Turn this off to fall back to the plain I2S capture path plus the
+            post-TTS suppression window.
+
+    # The AFE's runtime enable_agc/disable_agc ops are NULL in this configuration
+    # (and afe_enable_ns() only warns "NS is not initialized"), so AGC/NS can only
+    # be switched at compile time.  Measured 2026-10-19 on a 6-voice TTS stimulus:
+    # turning AGC off did NOT improve speaker separation (cross-speaker cosine
+    # 0.52-0.71 -> 0.56-0.74), so both stay on by default.
+    config VOICE_AEC_AGC
+        bool "AFE AGC (automatic gain control)"
+        default y
+        help
+            Level-normalises the microphone signal before ASR.  Turning it off
+            lowers the input by ~6-10 dB and, on this board, does not make the
+            voiceprint more discriminative.
+
+    config VOICE_AEC_NS
+        bool "AFE NS (WebRTC noise suppression)"
+        default y
+        help
+            Spectral denoising for the ASR uplink.  Kept on by default; see the
+            voiceprint experiments in ARCHITECTURE.md before turning it off.
+
+    config VOICE_BLE
+        bool "Bluetooth (BLE) via the on-board ESP32-C6"
+        default n
+        help
+            Puts the P4's NimBLE host on top of the C6's BT controller over VHCI.
+            OFF by default on purpose: the C6 firmware currently flashed on this
+            board does not answer HCI Reset (vhci_drv comes up "Enabled" but
+            every command times out with BLE_HS_ETIMEOUT_HCI), so enabling this
+            only produces a console full of errors.  Rebuild and re-flash the C6
+            slave with CONFIG_ESP_HOSTED_CP_BT=y, then turn this on.
+
+    config VOICE_SPEAKER_THRESHOLD
+        int "Voiceprint accept threshold (cosine x100)"
+        range 0 100
+        default 30
+        help
+            Cosine similarity (x100) above which an utterance is accepted into
+            the closest existing role.  Since 2026-10-19 the embedding is
+            computed from the pre-AFE microphone signal and the standardisation
+            tables were re-fitted on board recordings (44 utterances, 6 TTS
+            voices): same speaker 0.643 +- 0.220, different speaker
+            -0.142 +- 0.285, d'=3.1, AUC 0.98.  The old feature measured
+            cross-speaker cosine 0.5-0.9 and needed the high threshold.
+            30 is the offline optimum (EER 26, centroid classification 100%);
+            roles that do not match go through a 2-hit pending buffer before
+            人N is created; explicitly enrolled people are never modified.
+            The board logs every score and the top1-top2 gap, so tune from real
+            recordings if needed.
+
+    config VOICE_VP_INPUT_RAW
+        bool "Voiceprint uses the pre-AFE microphone signal"
+        default y
+        help
+            Compute the speaker embedding from the raw microphone block that is
+            captured in parallel with the AFE output.  The AFE's AEC/NS/AGC
+            reshape the spectrum and, measured 2026-10-19, flattened speaker
+            timbre on the processed signal; ASR still uses the AFE output.
+            Turn this off to reproduce the old AFE-input voiceprint for A/B.
+
+    config VOICE_SPEAKER_MARGIN_X100
+        int "Voiceprint relative margin gate (cosine x100, 0 = off)"
+        range 0 100
+        default 0
+        help
+            A match must beat the runner-up role by at least this much, in
+            addition to passing CONFIG_VOICE_SPEAKER_THRESHOLD.  Different
+            speakers can both clear an absolute threshold, so the top1-top2 gap
+            is the last line of defence.  0 disables the gate.  Tune from the
+            "gap" value the board prints on every match.  The serial command
+            "vpmargin <x100>" overrides it at runtime for A/B tests.
+
+    config VOICE_ENROLL_SENTENCES
+        int "Voiceprint enrollment: utterances averaged per person"
+        range 1 8
+        default 3
+        help
+            "enroll <name>" collects this many utterances and saves their
+            average embedding (L2-normalised).  Averaging cuts within-speaker
+            variance: 3 is a good balance between accuracy and patience, 1
+            reproduces the old single-shot behaviour.  The console prints the
+            progress after every utterance; "enroll cancel" aborts.
+
+    config VOICE_SPEAKER_VOLUME
+        int "Speaker volume (0-100)"
+        range 0 100
+        default 90
+        help
+            ES8311 DAC volume.  Measured on this board: 100 clips and breaks up,
+            90 is loud and still clean.  Can also be changed at runtime by the
+            set_volume tool when you ask 小新 to do it.
+
+    config VOICE_BRIDGE_URL
+        string "Bridge base URL (no trailing slash)"
+        default "http://192.168.0.100:8077"
+        help
+            LAN address of the local bridge (tools/bridge/deepseek_bridge.py).
+            The bridge runs faster-whisper for ASR and a local TTS, and calls
+            the DeepSeek Chat API for the actual answer.  Audio never leaves the
+            LAN - only the recognised text is sent to DeepSeek.
+
+    config VOICE_PLAYBACK
+        bool "Play each captured utterance back through the speaker"
+        default y
+        help
+            Useful to prove the codec + amplifier path without a camera or a
+            network round trip.
+
+    # ---------------------------------------------------------------------
+    # Cloud neural TTS.  The on-board ESP-SR engine is concatenative and
+    # always sounds a bit stiff; this swaps in a neural voice (SiliconFlow
+    # CosyVoice2) and keeps ESP-SR as the offline fallback.  Output is raw
+    # mono PCM at 16 kHz, the exact format the ES8311 path already takes.
+    # ---------------------------------------------------------------------
+    config VOICE_TTS_CLOUD
+        bool "Cloud neural TTS (SiliconFlow CosyVoice2)"
+        default y
+        help
+            When Wi-Fi is up, synthesize each reply with the cloud neural
+            voice instead of the on-board ESP-SR engine.  Any failure (no
+            network, timeout, bad key) silently falls back to ESP-SR, so the
+            assistant keeps talking offline.  Runtime A/B: the serial console
+            command "tts local" / "tts cloud" / "tts auto".
+
+    config VOICE_TTS_STREAM
+        bool "Stream cloud TTS audio while it is generated"
+        default y
+        help
+            POST with stream:true and play each PCM chunk as it arrives
+            instead of waiting for the whole reply to be synthesized: the
+            first word comes out ~1.5 s sooner.  Turn this off to fall back to
+            the batch request (whole reply downloaded, then played).
+
+    config TTS_BASE_URL
+        string "TTS endpoint URL"
+        default "https://api.siliconflow.cn/v1/audio/speech"
+        help
+            OpenAI-compatible /audio/speech endpoint.  The request asks for
+            response_format=pcm and sample_rate=16000.
+
+    config TTS_API_KEY
+        string "TTS API key (empty = reuse the ASR key)"
+        default ""
+        help
+            Leave empty to reuse CONFIG_ASR_API_KEY - both are SiliconFlow
+            services, and the build script already fills the ASR key from
+            config/siliconflow.key.
+
+    config TTS_MODEL
+        string "TTS model"
+        default "FunAudioLLM/CosyVoice2-0.5B"
+
+    config TTS_VOICE
+        string "TTS voice (model:voice)"
+        default "FunAudioLLM/CosyVoice2-0.5B:claire"
+        help
+            Presets include female anna/bella/claire/diana and male
+            alex/benjamin/charles/david.  The model prefix is required.
+
+    config TTS_SPEED_X100
+        int "Cloud TTS speed x100 (100 = normal)"
+        range 25 400
+        default 100
+
+    config TTS_GAIN_DB
+        int "Cloud TTS gain in dB"
+        range -10 10
+        default 0
+
+    config TTS_MAX_SECONDS
+        int "Longest single synthesized reply (seconds)"
+        range 5 60
+        default 30
+        help
+            PSRAM cap for one cloud reply; the prompt keeps replies to a
+            couple of sentences, so this is only a safety net.
+
+    # Boot-time conversation behaviour.  ASSISTANT answers every utterance (the
+    # original behaviour: no wake word, just talk to it).  MONITOR never
+    # answers, only records and lets the fact-checking supervisor interject.
+    # HYBRID answers only when the utterance is addressed ("小新", a question,
+    # or a request phrase) and otherwise just records - nice for a room where
+    # people talk to each other, but easy to mistake for "it stopped working".
+    config VOICE_DEFAULT_MODE
+        int "Conversation mode at boot (0=assistant, 1=monitor, 2=hybrid)"
+        range 0 2
+        default 0
+        help
+            Runtime switch: serial command "mode assistant|monitor|hybrid".
+            ASSISTANT (default) answers every utterance and still lets the
+            fact-checking supervisor chip in after the reply; HYBRID answers
+            only when addressed and lets the supervisor do the talking
+            otherwise; MONITOR never answers.  Runtime switch command: "mode".
+
+    config VOICE_SUPERVISOR
+        bool "Proactive fact-checking interjections (主动插话)"
+        default y
+        help
+            While the board is idle, show the rolling transcript to the model
+            and let it interrupt with one short correction when a claim
+            (weather, price, date, number, ...) is wrong or an important
+            omission matters.  It only runs after a reply turn has finished
+            (never while the answer is being produced or played), only for
+            utterances that contain something checkable, and it sees the
+            board's own last answer so it does not repeat it.  Runtime switch:
+            serial command "supervisor on|off".
+
+endmenu

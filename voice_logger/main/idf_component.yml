@@ -1,0 +1,27 @@
+## ESP32-P4-WIFI6-POE-ETH voice logger.
+## Wi-Fi comes from the on-board ESP32-C6 through ESP-Hosted (SDIO, SDMMC slot 1).
+dependencies:
+  espressif/esp_wifi_remote:
+    matches:
+      - if: "idf_version >= 6.0"
+        version: ">=1.6,<2.0"
+  espressif/esp_hosted:
+    matches:
+      - if: "idf_version >= 6.0"
+        version: ">=2.12,<3.0"
+  # esp-dl is kept only for its Fbank front end (the voiceprint supervector is
+  # built in app_speaker_id.cpp).  espressif/speaker_verification was removed:
+  # its TDNN returns an all-zero embedding on this board.
+  espressif/esp-dl:
+    version: "~3.3.12"
+  # NOTE: esp-dl 3.3.12 was pinned here while chasing the all-zero embedding.
+  # It made no difference (3.3.13 behaves identically), so the pin is gone and
+  # the default resolution is used.
+  # ESP-SR: on-board Chinese TTS (and later WakeNet / MultiNet / AFE).
+  espressif/esp-sr:
+    version: "^2.6.0"
+  # cJSON is no longer bundled with ESP-IDF 6.x
+  espressif/cjson:
+    version: "^1.7.19"
+  idf:
+    version: ">=5.5"

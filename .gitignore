@@ -1,0 +1,33 @@
+# --- build artefacts -------------------------------------------------------
+build/
+managed_components/
+*.bin
+*.elf
+*.map
+*.pyc
+__pycache__/
+*.log
+
+# --- ESP-IDF generated configuration --------------------------------------
+sdkconfig
+sdkconfig.old
+sdkconfig.ci.*
+
+# --- secrets: never commit these ------------------------------------------
+config/*.key
+config/deepseek.defaults
+config/asr.defaults
+config/tts.defaults
+config/wifi_credentials.defaults
+*.pem
+*.p12
+
+# --- large binary assets (fetch them separately, see assets/README.md) ----
+assets/*.dat
+
+# --- editors / OS ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

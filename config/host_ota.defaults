@@ -1,0 +1,4 @@
+# Host-performs-slave-OTA: push the freshly built ESP-Hosted slave firmware
+# (built from c6_slave for esp32c6, version 2.13.0) into the on-board ESP32-C6
+# over the existing SDIO link.  Method = host partition (no network needed).
+CONFIG_OTA_METHOD_PARTITION=y

@@ -1,0 +1,7 @@
+## ESP32-P4-WIFI6-POE-ETH, self-contained speaker test.
+## The ES8311 driver is vendored in ../components/es8311 (upstream
+## espressif/es8311 v1.0.0 does not build against ESP-IDF v6.x because
+## driver/gpio.h moved into esp_driver_gpio).  No registry access needed.
+dependencies:
+  idf:
+    version: ">=5.5"

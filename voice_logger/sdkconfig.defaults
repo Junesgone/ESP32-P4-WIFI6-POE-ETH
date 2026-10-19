@@ -1,0 +1,110 @@
+# Waveshare ESP32-P4-WIFI6-POE-ETH voice logger
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n
+CONFIG_ESP32P4_REV_MIN_300=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+# mbedtls TLS handshakes run on the main task during ASR/DeepSeek calls.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+CONFIG_FREERTOS_HZ=1000
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_BOOTLOADER_LOG_LEVEL=2
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_FATFS_VFS_FSTAT_BLKSIZE=4096
+CONFIG_FATFS_LFN_HEAP=y
+
+# 32 MB flash: a 1 MB factory partition cannot hold TLS + cJSON + DeepSeek.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Voice logger defaults (menuconfig -> Voice logger configuration) ---
+# Room noise floor measured at rms 20-130; real speech peaks 2500-5600.
+# 600 let 600-680 noise blips through, so the gate sits at 800.
+CONFIG_VOICE_VAD_START_RMS=800
+CONFIG_VOICE_VAD_HANGOVER_MS=700
+CONFIG_VOICE_VAD_MIN_SPEECH_MS=300
+CONFIG_VOICE_VAD_MAX_UTTERANCE_MS=20000
+CONFIG_VOICE_PREROLL_MS=300
+# Local replay of the captured utterance was a debug aid from before the TTS
+# existed.  It made the board repeat the user verbatim (rms 5067 at the mic),
+# which the VAD then picked up as a new utterance - a feedback loop.  The reply
+# is spoken by ESP-SR TTS instead, so this stays off.
+CONFIG_VOICE_PLAYBACK=n
+
+# TLS for api.deepseek.com
+# Two SNTP servers (aliyun + cn.pool) need room in the server array.
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+
+# --- BLE via the on-board ESP32-C6 -----------------------------------------
+# The C6 runs the BT controller only (CONFIG_BT_CONTROLLER_ONLY=y in the slave
+# firmware), so the P4 must run the host stack and talk HCI to it over VHCI on
+# the same SDIO link that carries Wi-Fi.  Values follow esp-hosted's
+# examples/host_nimble_bleprph_host_only_vhci.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+# Off until the remaining C6-side issue is solved (see ARCHITECTURE.md 12.1).
+CONFIG_VOICE_BLE=n
+
+# Real fix found while tracing Bluetooth, and worth keeping either way.  esp-hosted's transport buffers are
+# allocated with MALLOC_CAP_DMA by hosted_malloc_align(); without this option it
+# only ever tries INTERNAL|DMA, and on the P4 that pool is already consumed by
+# the SDIO driver + Wi-Fi.  The first HCI command then dies in
+# ble_transport_to_ll_cmd_impl with "malloc failed (want 4, align 128)" and
+# NimBLE reports BLE_HS_EUNKNOWN - which looks exactly like a controller that
+# is not answering.  P4 PSRAM is DMA-capable through cache, so prefer it.
+CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+
+# NOTE ON THE 32 MB OF FLASH
+# The whole 32 MB is usable, but the P4 cache only *memory-maps* the low 16 MB.
+# Anything mmap'd at runtime (voice_data, model - see partitions.csv) therefore
+# has to live below 0x1000000.  Going past that needs
+# CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH, which is gated behind
+# IDF_EXPERIMENTAL_FEATURES and documented as unstable on some flash chips, so
+# the partition layout is arranged to stay inside the window instead.
+
+# Voiceprint: keep the .espdl models in their own partitions rather than
+# embedding 5.7 MB of rodata in the app.
+CONFIG_FLASH_SPEAKER_VERIFICATION=y
+CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_PARTITION=y
+# Voiceprint accept threshold (cosine x100) for the 43-dim MFCC+pitch
+# embedding, computed from the PRE-AFE microphone signal.  Tables re-fitted on
+# board raw-mic recordings 2026-10-19: same speaker 0.643 +- 0.220, different
+# speaker -0.142 +- 0.285 (d'=3.1, AUC 0.98).  30 is the offline optimum; the
+# board logs every score and the top1-top2 gap, so tune from real recordings.
+CONFIG_VOICE_SPEAKER_THRESHOLD=30
+# 100 clips the ES8311 DAC into the NS4150B (audible breakup); 90 is loud
+# and still clean.  Runtime-adjustable through the set_volume tool.
+CONFIG_VOICE_SPEAKER_VOLUME=90
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_ESP_TLS_INSECURE=n
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+
+# mbedTLS hardware AES/GCM allocates DMA descriptors out of internal RAM.  With
+# ESP-Hosted + I2S + Wi-Fi already holding that pool, TLS handshakes from a
+# second task failed with
+#     esp-aes: Failed to allocate memory for start alignment buffer
+# and the cloud call died.  The same DMA pool feeds the ECC/MPI/SHA engines, and
+# with them enabled the handshake got past certificate validation and then died
+# in the key exchange with "mbedtls_ssl_handshake returned -0x008D".
+# All hardware crypto acceleration is therefore off: handshakes are a few hundred
+# ms slower, which is nothing next to a cloud ASR round trip.
+CONFIG_MBEDTLS_HARDWARE_AES=n
+CONFIG_MBEDTLS_HARDWARE_GCM=n
+CONFIG_MBEDTLS_HARDWARE_MPI=n
+CONFIG_MBEDTLS_HARDWARE_ECC=n
+CONFIG_MBEDTLS_HARDWARE_SHA=n
+CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY=n
+CONFIG_MBEDTLS_HARDWARE_RSA_DS_PERIPHERAL=n
+CONFIG_MBEDTLS_AES_USE_INTERRUPT=n

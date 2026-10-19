@@ -1,0 +1,58 @@
+dependencies:
+  cmd_nvs:
+    dependencies: []
+    source:
+      path: ../../v6.1/esp-idf/examples/system/console/advanced/components/cmd_nvs
+      type: local
+    version: '*'
+  cmd_system:
+    dependencies: []
+    source:
+      path: ../../v6.1/esp-idf/examples/system/console/advanced/components/cmd_system
+      type: local
+    version: '*'
+  espressif/esp_hosted:
+    component_hash: d72bce4d4a9fd6d4b610f3437735f58c70cfe40abfc969b53396dbb2e1d4c49b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.5'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32c2
+    - esp32s2
+    - esp32s3
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32h2
+    - esp32h4
+    - esp32h21
+    - esp32p4
+    version: 3.0.9
+  idf:
+    source:
+      type: idf
+    version: 6.1.0
+  joltwallet/littlefs:
+    component_hash: 3af20a3d75c49db9dc2286fd50862c34055c9f578419ad1f2bf7ed3ed01391fe
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.22.3
+direct_dependencies:
+- cmd_nvs
+- cmd_system
+- espressif/esp_hosted
+- joltwallet/littlefs
+manifest_hash: 817143f242cf27cea472bc196608265eba66f0386c468056b0f632cea73947e5
+target: esp32p4
+version: 3.0.0

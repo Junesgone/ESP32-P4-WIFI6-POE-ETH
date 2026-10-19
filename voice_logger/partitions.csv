@@ -1,0 +1,18 @@
+# ESP32-P4-WIFI6-POE-ETH, 32 MB flash.
+#
+# The whole 32 MB is usable, but the P4 flash cache only MEMORY-MAPS the low
+# 16 MB (0x0000000-0x0FFFFFF).  Anything mmap'd at runtime therefore has to
+# satisfy offset + size <= 0x1000000:
+#     voice_data  ESP-SR Chinese TTS voice set
+#     model       esp-sr models (AEC / NS / VAD) loaded by esp_srmodel_init()
+# Going beyond that needs CONFIG_BOOTLOADER_CACHE_32BIT_ADDR_QUAD_FLASH, which
+# is gated behind IDF_EXPERIMENTAL_FEATURES and documented as unstable on some
+# flash chips, so the layout simply stays inside the window.
+#
+# Name,        Type, SubType,  Offset,    Size
+nvs,           data, nvs,      0x9000,    0x6000
+phy_init,      data, phy,      0xf000,    0x1000
+factory,       app,  factory,  0x10000,   8M
+voice_data,    data, fat,      0x810000,  4M
+model,         data, spiffs,   0xC10000,  3M
+storage,       data, fat,      0xF10000,  2M

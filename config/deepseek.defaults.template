@@ -1,0 +1,11 @@
+# DeepSeek credentials for the voice logger.
+# Copy this file to deepseek.defaults and fill in the key:
+#
+#   Copy-Item config\deepseek.defaults.template config\deepseek.defaults
+#
+# The real file is intentionally NOT created for you: it holds a secret and
+# should stay local.  It is passed on the build command line via
+#   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;<board>;<hosted>;<wifi>;config\deepseek.defaults"
+CONFIG_DEEPSEEK_API_KEY="sk-REPLACE-ME"
+CONFIG_DEEPSEEK_MODEL="deepseek-flash"
+CONFIG_DEEPSEEK_MAX_TOKENS=400

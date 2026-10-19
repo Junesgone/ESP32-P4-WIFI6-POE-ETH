@@ -1,0 +1,7 @@
+# Audio overlay for 12_I2SCodec on ESP32-P4-WIFI6-POE-ETH
+# The board wires ES8311 + NS4150B exactly like the example's non-BSP pin map:
+#   I2C SDA=GPIO7 SCL=GPIO8 | I2S MCLK=13 BCK=12 WS=10 DOUT=9 DIN=11 | PA_EN=GPIO53
+# so the Waveshare BSP is deliberately disabled.
+CONFIG_EXAMPLE_BSP=n
+CONFIG_EXAMPLE_MODE_MUSIC=y
+CONFIG_EXAMPLE_VOICE_VOLUME=70
