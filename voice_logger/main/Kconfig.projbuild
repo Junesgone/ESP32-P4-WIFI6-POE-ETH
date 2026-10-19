@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Junesgone
+
 menu "Voice logger configuration"
 
     config ESP_WIFI_SSID

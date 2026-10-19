@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #pragma once
 /* BLE through the on-board ESP32-C6.
  *

@@ -1,5 +1,7 @@
 # ESP32-P4-WIFI6-POE-ETH — 小新 (Xiaoxin) Chinese Voice Assistant
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 A self-contained **Chinese voice assistant** running on the
 **Waveshare ESP32-P4-WIFI6-POE-ETH** development board. The board listens through its
 on-board microphone, transcribes with a cloud ASR, answers with a cloud LLM (DeepSeek,
@@ -127,6 +129,7 @@ published in this repository.
 | `tools/` | build + flash script and serial capture/ask/send helpers |
 | `config/` | board and feature sdkconfig fragments (secrets are **not** committed; see `config/README.md`) |
 | `config/README.md` | how to supply API keys / Wi-Fi credentials safely |
+| `LICENSE` / `NOTICE` | Apache License 2.0 and third-party attribution |
 
 ---
 
@@ -241,7 +244,21 @@ This repository intentionally ships **no** credentials:
 
 ---
 
-## 9. Roadmap
+## 9. License
+
+Released under the **[Apache License, Version 2.0](LICENSE)** — Copyright 2026 Junesgone.
+You may use, modify and redistribute the code, including commercially, provided the
+license and NOTICE are kept. See [NOTICE](NOTICE) for third-party attribution.
+
+The ESP-Hosted slave example (`c6_slave/`) and the board bring-up projects
+(`host_ota/`, `sd_test/`, `sd_probe/`, `sd_wifi_coexist/`, `speaker_test/`,
+`wifi_scan/`) are Espressif example code and retain their original Espressif
+copyright and Apache-2.0 notices. Runtime services (DeepSeek, SiliconFlow) are
+governed by their own terms of service.
+
+---
+
+## 10. Roadmap
 
 1. **Barge-in:** re-measure the I2S/speaker delay now that the AEC reference path is
    fixed; increase `aec_filter_length` accordingly and allow talking over replies.
@@ -254,7 +271,7 @@ This repository intentionally ships **no** credentials:
 
 ---
 
-## 10. Acknowledgements
+## 11. Acknowledgements
 
 Built on [ESP-IDF](https://github.com/espressif/esp-idf), ESP-SR, esp-dl and ESP-Hosted
 from Espressif; Chinese ASR/TTS by [SiliconFlow](https://siliconflow.cn); LLM and web

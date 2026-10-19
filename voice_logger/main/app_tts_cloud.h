@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #pragma once
 /* Cloud neural TTS through the SiliconFlow "audio/speech" endpoint.
  *

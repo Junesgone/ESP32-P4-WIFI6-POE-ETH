@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 /* Waveshare ESP32-P4-WIFI6-POE-ETH board map.
  * Every pin below was read off the board schematic and confirmed on hardware.
  */

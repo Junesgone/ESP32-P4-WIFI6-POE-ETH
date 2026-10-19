@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #pragma once
 /* Tool calling for 小新.
  *

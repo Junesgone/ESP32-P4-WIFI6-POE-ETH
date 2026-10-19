@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Junesgone
+
 <#
   Build (and optionally flash) the voice_logger firmware.
 

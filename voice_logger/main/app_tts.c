@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #include "app_tts.h"
 #include "app_audio.h"
 #include "app_conversation.h"

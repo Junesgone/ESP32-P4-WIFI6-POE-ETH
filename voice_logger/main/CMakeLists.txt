@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Junesgone
+
 idf_component_register(SRCS "main.c"
                        "app_board.c"
                        "app_audio.c"

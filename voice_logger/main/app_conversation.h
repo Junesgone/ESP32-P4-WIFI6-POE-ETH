@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #pragma once
 /* Conversation monitor: make the board a participant, not a Q&A box.
  *

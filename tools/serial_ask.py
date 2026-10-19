@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Junesgone
+
 """Reset the board, wait until the voice logger is listening, send one console
 line and print everything that comes back - including the DeepSeek reply.
 

@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 /* Voice logger for the Waveshare ESP32-P4-WIFI6-POE-ETH.
  *
  *   on-board analog mic -> ES8311 ADC -> I2S RX -> energy VAD

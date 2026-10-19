@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright 2026 Junesgone
+ */
+
 #include "app_deepseek.h"
 #include "app_identity.h"
 #include "app_persona.h"

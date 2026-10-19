@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Junesgone
+
 """Reset the board into run mode and capture its UART output.
 
 Usage: py -3.14 serial_capture.py [port] [seconds] [baud]
