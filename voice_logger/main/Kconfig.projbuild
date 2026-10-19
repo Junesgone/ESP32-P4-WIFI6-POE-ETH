@@ -128,14 +128,15 @@ menu "Voice logger configuration"
     config VOICE_SPEAKER_THRESHOLD
         int "Voiceprint accept threshold (cosine x100)"
         range 0 100
-        default 45
+        default 48
         help
             Cosine similarity (x100) above which an utterance is accepted into
             the closest existing role.  The embedding is computed from the
             pre-AFE microphone signal, standardised with device-fitted tables
-            and LDA-weighted.  45 (with margin 10) is high enough to keep
-            several similar same-gender voices from collapsing into one
-            anonymous role; lower values merge speakers more eagerly.
+            and discriminatively weighted per dimension.  48 (with margin 10)
+            is high enough to keep several similar same-gender voices from
+            collapsing into one anonymous role; lower values merge speakers
+            more eagerly.
             Roles that do not match go through a 2-hit pending buffer before
             人N is created; explicitly enrolled people are never modified.
             The board logs every score and the top1-top2 gap, so this can be

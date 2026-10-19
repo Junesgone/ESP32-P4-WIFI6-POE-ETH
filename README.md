@@ -58,9 +58,12 @@ Behaviour highlights:
   in the room (weather, prices, dates, numbers) with a web search and say one short
   correction — gated so it never talks over a reply and never repeats itself.
 - **On-device voiceprint.** A 43-dimensional MFCC + pitch embedding is computed from
-  the pre-AFE microphone signal, LDA-weighted, and matched against enrolled people
-  or automatically created anonymous roles (人1, 人2, …). Enrolment averages 3
-  utterances per person.
+  the pre-AFE microphone signal, discriminatively weighted per dimension (Fisher
+  ratio over hard-to-separate voice pairs), calibrated on session-balanced
+  on-device recordings and matched against enrolled people or automatically
+  created anonymous roles (人1, 人2, …). Anonymous roles are only seeded by
+  reasonably long utterances, so VAD fragments cannot create duplicates.
+  Enrolment averages 3 utterances per person.
 - **Full logging.** Every turn becomes a 16 kHz WAV plus one JSONL line with speaker
   id, transcript, reply and RMS/duration metadata on the TF card.
 
@@ -83,7 +86,7 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 
 ---
 
-## 3. Features and current state (v0.0.2)
+## 3. Features and current state (v0.0.5)
 
 | Area | State |
 |---|---|
@@ -212,7 +215,7 @@ voiceprint diagnostics) are documented inline in `voice_logger/main/main.c`.
 
 ## 7. Version and releases
 
-Current version: **v0.0.2** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.5** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 

@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.0.5 — 2026-10-19
+
+Voiceprint accuracy release: discriminative weighting, session-balanced
+calibration and safer anonymous-role creation.
+
+### Changed
+
+- Voiceprint dimensions are weighted independently by their Fisher ratio over
+  hard-to-separate voice pairs (40 independent weights instead of 20 shared
+  mean/std weights), and the standardisation tables were refit on a
+  session-balanced set of on-device recordings.
+- Accept threshold raised to 0.48 to match the new feature scale (relative
+  margin stays at 0.10).
+- A new anonymous role can only be seeded by utterances of at least 2.5 s, so
+  VAD fragments of one sentence cannot accumulate into a duplicate role; short
+  fragments can still match existing roles.
+- Firmware version bumped to **0.0.5**.
+
+## v0.0.3 — 2026-10-19
+
+Feature release: discriminative voiceprint embedding and refit calibration.
+
+### Changed
+
+- Voiceprint weights are now per-dimension Fisher-ratio weights computed over
+  hard-to-separate voice pairs (40 independent dimensions instead of 20 shared
+  mean/std weights), and the standardisation tables were refit on an expanded
+  on-device recording set.
+- Pitch dimensions are no longer separately weighted; the pitch block keeps its
+  0.10 mixing weight.
+- Firmware version bumped to **0.0.3**.
+
 ## v0.0.2 — 2026-10-19
 
 Maintenance release. No functional changes to the firmware.

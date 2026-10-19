@@ -52,6 +52,10 @@
 #define VP_MIN_SAMPLES   8000      /* 0.5 s */
 #define VP_MAX_SAMPLES   96000     /* 6 s */
 #define VP_MIN_FRAMES    20
+/* A new anonymous role may only be seeded by a reasonably long utterance:
+ * VAD can split one sentence into fragments, and two fragments of the same
+ * speaker are not reliable evidence for "unknown voice". */
+#define VP_MIN_NEW_ROLE_SAMPLES 40000   /* 2.5 s at 16 kHz */
 
 #define VP_PITCH_WEIGHT  0.10f     /* energy share of the pitch block */
 #define VP_EXEMPLARS     4
@@ -968,7 +972,15 @@ const char *speaker_id_identify(const int16_t *pcm, size_t samples)
         return s_last;
     }
 
-    /* Unknown so far: only create a role after two consistent hits. */
+    /* Unknown so far: only create a role after two consistent hits.  Very
+     * short VAD fragments may still match an existing role (handled above),
+     * but they must not seed or advance pending candidates. */
+    if (samples < VP_MIN_NEW_ROLE_SAMPLES) {
+        ESP_LOGI(TAG, "no match (best %.3f < %.2f, short %u ms ignored)", best,
+                 VP_T_ACCEPT, (unsigned)(samples / 16));
+        return s_last;
+    }
+
     int pi = -1;
     float pbest = -1.0f;
     for (int k = 0; k < VP_PENDING_MAX; k++) {

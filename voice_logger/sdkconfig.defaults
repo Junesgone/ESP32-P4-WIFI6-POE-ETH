@@ -87,7 +87,7 @@ CONFIG_SPEAKER_VERIFICATION_MODEL_IN_FLASH_PARTITION=y
 # similar same-gender voices from merging (offline clustering replay); 30 would
 # over-merge 6-speaker sessions.  The board logs every score and the top1-top2
 # gap, so tune from real recordings if needed.
-CONFIG_VOICE_SPEAKER_THRESHOLD=45
+CONFIG_VOICE_SPEAKER_THRESHOLD=48
 CONFIG_VOICE_SPEAKER_MARGIN_X100=10
 # 100 clips the ES8311 DAC into the NS4150B (audible breakup); 90 is loud
 # and still clean.  Runtime-adjustable through the set_volume tool.
