@@ -304,7 +304,7 @@ esp_err_t storage_dump_index(int max_lines)
 
 esp_err_t storage_append_turn(const char *rel_wav, uint32_t duration_ms, int rms_peak,
                               const char *face_id, const char *speaker_id,
-                              const char *text, const char *reply)
+                              const char *text, const char *reply, const char *meta)
 {
     if (!s_ready) {
         return ESP_ERR_INVALID_STATE;
@@ -340,11 +340,12 @@ esp_err_t storage_append_turn(const char *rel_wav, uint32_t duration_ms, int rms
             "{\"schema\":1,\"ts\":\"%s\",\"uptime_ms\":%llu,\"wav\":\"%s\","
             "\"duration_ms\":%u,\"rms_peak\":%d,"
             "\"face_id\":\"%s\",\"speaker_id\":\"%s\","
+            "%s"
             "\"text\":\"%s\",\"reply\":\"%s\"}\n",
             stamp,
             (unsigned long long)(xTaskGetTickCount() * portTICK_PERIOD_MS),
             rel_wav ? rel_wav : "", (unsigned)duration_ms, rms_peak,
-            f_esc, s_esc, t_esc, r_esc);
+            f_esc, s_esc, meta ? meta : "", t_esc, r_esc);
     fclose(j);
     free(t_esc); free(r_esc); free(f_esc); free(s_esc);
     return ESP_OK;

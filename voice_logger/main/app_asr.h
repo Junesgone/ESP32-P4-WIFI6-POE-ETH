@@ -12,9 +12,11 @@
  * to a cloud endpoint and gets text back - no extra device on the LAN, the
  * on-board ESP32-C6 Wi-Fi is enough.
  *
- * Default backend: SiliconFlow  POST /v1/audio/transcriptions
- *   multipart: model=FunAudioLLM/SenseVoiceSmall + file=<wav>
- *   response:  {"text": "..."}
+ * Default backend: DeepSeek standalone Speech-to-Text
+ *   POST https://api.deepseek.com/v1/tools/asr
+ *   multipart/form-data: file=<16-bit PCM WAV>   (no model field)
+ *   response:  {"request_id":"...","text":"...","duration_ms":3200}
+ *   8 MiB / 120 s per request, language auto-detected, 20+ languages.
  *
  * Backends are swappable through menuconfig (ASR_BASE_URL / ASR_MODEL), so a
  * self-hosted FunASR/Paraformer service can be dropped in later by pointing the
@@ -28,5 +30,8 @@
  * out_text is always NUL-terminated, empty on failure. */
 esp_err_t asr_transcribe(const int16_t *mono, size_t samples, uint32_t sample_rate,
                          char *out_text, size_t out_len);
+
+/* Transcribes a WAV file on the TF card (standalone API test path). */
+esp_err_t asr_transcribe_file(const char *path, char *out_text, size_t out_len);
 
 bool asr_configured(void);

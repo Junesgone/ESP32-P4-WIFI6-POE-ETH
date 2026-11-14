@@ -23,10 +23,12 @@ esp_err_t storage_save_wav(const int16_t *mono, size_t samples, uint32_t sample_
                            uint32_t duration_ms,
                            char *out_rel_path, size_t out_rel_path_len);
 
-/* Appends one complete conversation turn as a single JSON object. */
+/* Appends one complete conversation turn as a single JSON object.
+ * meta is an optional raw JSON member fragment (e.g. the DeepSeek full-suite
+ * report "ds":{"title":"...","search":1,...},) or NULL/"" when unused. */
 esp_err_t storage_append_turn(const char *rel_wav, uint32_t duration_ms, int rms_peak,
                               const char *face_id, const char *speaker_id,
-                              const char *text, const char *reply);
+                              const char *text, const char *reply, const char *meta);
 
 /* Copies a short human/LLM readable summary of the last few turns into out. */
 esp_err_t storage_recent_text(char *out, size_t out_len, int max_records);

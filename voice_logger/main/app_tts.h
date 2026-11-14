@@ -9,13 +9,15 @@
  * Two engines behind one interface:
  *   - ESP-SR Chinese TTS (on the board, always available offline, sounds
  *     concatenative/robotic - the fallback)
- *   - SiliconFlow CosyVoice2 neural TTS (natural voice, needs Wi-Fi, see
- *     app_tts_cloud.h)
+ *   - DeepSeek neural TTS (natural voice, needs Wi-Fi; WebSocket streaming
+ *     with a streaming-POST fallback, see app_tts_cloud.h)
  *
  * Both produce mono 16 kHz 16-bit PCM, which is exactly the format the
- * ES8311 / NS4150B path already runs at.  Playback happens on its own task, so
- * tts_say() returns as soon as the clip is queued and the capture loop keeps
- * running (that is what makes talking over the top possible).
+ * ES8311 / NS4150B path already runs at.  Cloud audio is resampled from the
+ * service's 24 kHz down to 16 kHz and played through a jitter-buffer ring so
+ * network bursts and gaps never reach the DAC.  Playback happens on its own
+ * task, so tts_say() returns as soon as the clip is queued and the capture
+ * loop keeps running (that is what makes talking over the top possible).
  */
 #include <stdbool.h>
 #include <stdint.h>

@@ -24,7 +24,7 @@ idf_component_register(SRCS "main.c"
                                    es8311 fatfs sdmmc esp_driver_sdmmc
                                    esp_wifi nvs_flash esp_netif esp_timer
                                    esp_http_client esp_http_server mbedtls esp-tls
-                                   cjson esp-dl bt)
+                                   esp_ringbuf cjson esp-dl bt)
 
 # esp-dl is now used only for its Fbank feature front end, so no model op
 # declaration is needed here any more (esp_dl_compile_add_yml was required only

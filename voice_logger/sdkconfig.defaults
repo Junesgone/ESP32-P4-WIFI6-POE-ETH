@@ -91,7 +91,10 @@ CONFIG_VOICE_SPEAKER_THRESHOLD=48
 CONFIG_VOICE_SPEAKER_MARGIN_X100=10
 # 100 clips the ES8311 DAC into the NS4150B (audible breakup); 90 is loud
 # and still clean.  Runtime-adjustable through the set_volume tool.
-CONFIG_VOICE_SPEAKER_VOLUME=90
+# Volume 90 fed the microphone (on-board speaker next to the on-board mic) and
+# made the VAD hear the assistant itself; 50 is loud enough in a room and much
+# kinder to the echo canceller.  Runtime: serial command "vol <0-100>".
+CONFIG_VOICE_SPEAKER_VOLUME=50
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_INSECURE=n
@@ -114,3 +117,21 @@ CONFIG_MBEDTLS_HARDWARE_SHA=n
 CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY=n
 CONFIG_MBEDTLS_HARDWARE_RSA_DS_PERIPHERAL=n
 CONFIG_MBEDTLS_AES_USE_INTERRUPT=n
+
+# --- TLS stability / first-audio latency -----------------------------------
+# KNOWN ISSUE (not fixed yet): api.deepseek.com is issued by "TrustAsia DV
+# TLS RSA CA 2025" (chained to DigiCert Global Root G2).  Its edge sometimes
+# serves the leaf certificate without the intermediate, so mbedTLS reports
+#   esp-x509-crt-bundle: No matching trusted root certificate found
+# and that turn falls back to the spoken "抱歉，刚才没整理出答案…".  The
+# DeepSeek client now retries the transport twice (0.5 s / 1.5 s backoff),
+# which recovers some of these; a permanent fix is tracked separately (pin the
+# intermediate CA / switch to a LAN cloud bridge).  Do not add a custom
+# certificate bundle here: doing so made esp-x509's RSA signature check fail
+# with PSA_ERROR_INSUFFICIENT_MEMORY on this board.
+
+# NOTE: CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS is deliberately NOT enabled.
+# It only helps when the esp_http_client handle is kept alive between requests
+# (the transport owns the ticket), and keeping it alive retained ~33 KB of
+# internal RAM - after which the next DeepSeek handshake died with
+# "esp-tls: create_ssl_handle failed".  The ~0.3 s fresh handshake is cheaper.

@@ -38,24 +38,31 @@ menu "Voice logger configuration"
         default 300
 
     config ASR_API_KEY
-        string "ASR API key"
+        string "ASR API key (empty = reuse the DeepSeek key)"
         default ""
         help
-            Key for the speech-to-text endpoint.  With the default backend that
-            is siliconflow.cn (model FunAudioLLM/SenseVoiceSmall, a Chinese ASR
-            model).  Keep it in config/asr.key, not in the shared source tree.
+            Key for the speech-to-text endpoint.  Leave it empty and the
+            DeepSeek key below is used, which is what the default backend
+            (POST /v1/tools/asr) needs.  Filling it in points the same code at
+            another vendor.
 
     config ASR_BASE_URL
         string "ASR endpoint URL"
-        default "https://api.siliconflow.cn/v1/audio/transcriptions"
+        default "https://api.deepseek.com/v1/tools/asr"
         help
-            OpenAI-compatible /audio/transcriptions endpoint.  Point this at a
-            LAN box running FunASR/Paraformer if you would rather keep audio
-            off the internet - the board does not care which one it is.
+            DeepSeek standalone Speech-to-Text endpoint: multipart/form-data
+            with one "file" field holding a 16-bit PCM WAV (8/16/22.05/24/32/
+            44.1/48 kHz, mono or stereo, <= 8 MiB, <= 120 s).  The language is
+            auto-detected.  A self-hosted FunASR/Paraformer service can be
+            dropped in by pointing this at the LAN box.
 
     config ASR_MODEL
-        string "ASR model name"
-        default "FunAudioLLM/SenseVoiceSmall"
+        string "ASR model name (empty = omit the field)"
+        default ""
+        help
+            Only for OpenAI-compatible /audio/transcriptions backends.  The
+            DeepSeek endpoint takes no model field, so this stays empty and the
+            multipart body only carries the file.
 
     config DEEPSEEK_API_KEY
         string "DeepSeek API key"
@@ -67,10 +74,131 @@ menu "Voice logger configuration"
     config DEEPSEEK_MODEL
         string "DeepSeek model"
         default "deepseek-flash"
+        help
+            Only deepseek-flash (V4.1-Flash) has the full-suite application
+            features: built-in web search, deep thinking search, URL reading,
+            file parsing and the safety check.
+
+    # ------------------------------------------------------------------
+    # Full-suite endpoints.  All of them live on the same host; the base URL
+    # is here so a proxy can be dropped in without touching the sources.
+    # ------------------------------------------------------------------
+    config DEEPSEEK_SEARCH_URL
+        string "Standalone Search API URL"
+        default "https://api.deepseek.com/v1/tools/search"
+
+    config DEEPSEEK_FETCH_URL
+        string "Standalone Fetch (read URL) API URL"
+        default "https://api.deepseek.com/v1/tools/fetch"
+
+    config DEEPSEEK_OCR_URL
+        string "Standalone OCR API URL"
+        default "https://api.deepseek.com/v1/tools/ocr"
+
+    config DEEPSEEK_FILES_URL
+        string "Files API URL"
+        default "https://api.deepseek.com/files"
+
+    config DEEPSEEK_TTS_URL
+        string "Text-to-Speech API URL (full text POST)"
+        default "https://api.deepseek.com/v1/tools/tts"
+
+    config DEEPSEEK_TTS_WS_URL
+        string "Text-to-Speech WebSocket URL (streaming synthesis)"
+        default "wss://api.deepseek.com/v1/tools/tts"
+
+    # ------------------------------------------------------------------
+    # Build-a-Chatbot feature switches.  These are the same parameters the
+    # DeepSeek App uses, handled server-side: the board only declares them.
+    # ------------------------------------------------------------------
+    config DEEPSEEK_THINKING
+        bool "Thinking mode (深度思考)"
+        default y
+        help
+            Sends thinking {"type": "enabled"} with reasoning_effort.  With
+            the built-in web search tool declared this turns web search into
+            deep thinking search: over several reasoning steps the model
+            searches, opens pages and checks facts before answering.  Costs a
+            few extra seconds before the first word.  Runtime A/B: the serial
+            console command "think on|off".
+
+    config DEEPSEEK_REASONING_EFFORT_HIGH
+        bool "Thinking effort: high (default)"
+        default y
+    config DEEPSEEK_REASONING_EFFORT_MAX
+        bool "Thinking effort: max"
+    config DEEPSEEK_REASONING_EFFORT_LOW
+        bool "Thinking effort: low"
+
+    config DEEPSEEK_REASONING_EFFORT
+        string
+        default "high" if DEEPSEEK_REASONING_EFFORT_HIGH
+        default "max" if DEEPSEEK_REASONING_EFFORT_MAX
+        default "low" if DEEPSEEK_REASONING_EFFORT_LOW
+
+    config DEEPSEEK_WEB_SEARCH
+        bool "Built-in web search tool (deepseek_web_search)"
+        default y
+        help
+            Declares the server-side tool {"type": "deepseek_web_search"}.
+            The service runs the search and answers with citations - the board
+            does not perform any HTTP request for it.  With thinking enabled
+            this is deep thinking search (深度思考搜索); with thinking disabled
+            it is classic web search (联网搜索).  Runtime switch: "search on|off".
+
+    config DEEPSEEK_READ_URL
+        bool "Built-in URL reading tool (deepseek_read_url)"
+        default y
+        help
+            Declares {"type": "deepseek_read_url"}: when the user message
+            contains links the service fetches those pages and answers from
+            them.  Runtime switch: "readurl on|off".
+
+    config DEEPSEEK_SAFETY
+        bool "Model content safety (safety_check level high)"
+        default y
+        help
+            Basic risk control on the model input and output.  A refusal is
+            returned as finish_reason "content_filter" (or the refusal marker
+            in the final chunk) and the board answers with a short spoken
+            refusal instead of the blocked text.  Enable it whenever the
+            device is used by more than its owner.
+
+    config DEEPSEEK_TITLE
+        bool "Conversation title (title.enabled)"
+        default y
+        help
+            Asks the service for a short title for the conversation, returned
+            in the last stream chunk (delta.title) or message.title.  Sent only
+            while the current conversation has no title yet, as the guide
+            recommends.  Stored with the turn on the TF card.
+
+    config DEEPSEEK_USER_CITY
+        string "User location for the metadata marker"
+        default "中国"
+        help
+            Location field of the latest_reminder message
+            "<date>,<weekday>,<location>,<platform>,<language>" that tells the
+            model the current date, weekday, city, platform and language.
+            The runtime value follows the "city" console command.
+
+    config DEEPSEEK_USER_PLATFORM
+        string "Platform field for the metadata marker (App or Web)"
+        default "App"
+
+    config DEEPSEEK_USER_LANGUAGE
+        string "Language field for the metadata marker"
+        default "中文"
 
     config DEEPSEEK_MAX_TOKENS
-        int "Max reply tokens"
-        default 400
+        int "Max reply tokens (per inference step)"
+        default 900
+        help
+            The API applies this to each inference step of a round, and with
+            thinking enabled the reasoning tokens are included in the output
+            count - 400 was cutting answers off with finish_reason "length"
+            once 深度思考 was on by default.  Still short: the persona asks for
+            1-3 spoken sentences.
 
     config DEEPSEEK_TEMPERATURE_X100
         int "LLM temperature x100 (higher = more varied phrasing)"
@@ -191,73 +319,73 @@ menu "Voice logger configuration"
             codec/amplifier path.  Off by default.
 
     # ---------------------------------------------------------------------
-    # Cloud neural TTS.  The on-board ESP-SR engine is concatenative and
-    # always sounds a bit stiff; this swaps in a neural voice (SiliconFlow
-    # CosyVoice2) and keeps ESP-SR as the offline fallback.  Output is raw
-    # mono PCM at 16 kHz, the exact format the ES8311 path already takes.
+    # Cloud neural TTS.  DeepSeek's standalone Text-to-Speech API replaces the
+    # old SiliconFlow CosyVoice2 path: 24 kHz mono PCM, two voices (stella /
+    # tide), streamed over WebSocket while the text is still being sent.
+    # The on-board ESP-SR engine stays as the offline fallback.
     # ---------------------------------------------------------------------
     config VOICE_TTS_CLOUD
-        bool "Cloud neural TTS (SiliconFlow CosyVoice2)"
+        bool "Cloud neural TTS (DeepSeek)"
         default y
         help
-            When Wi-Fi is up, synthesize each reply with the cloud neural
+            When Wi-Fi is up, synthesize each reply with the DeepSeek neural
             voice instead of the on-board ESP-SR engine.  Any failure (no
-            network, timeout, bad key) silently falls back to ESP-SR, so the
-            assistant keeps talking offline.  Runtime A/B: the serial console
-            command "tts local" / "tts cloud" / "tts auto".
+            network, timeout, bad key, content filter) silently falls back to
+            ESP-SR, so the assistant keeps talking offline.  Runtime A/B: the
+            serial console command "tts local" / "tts cloud" / "tts auto".
 
     config VOICE_TTS_STREAM
         bool "Stream cloud TTS audio while it is generated"
         default y
         help
-            POST with stream:true and play each PCM chunk as it arrives
-            instead of waiting for the whole reply to be synthesized: the
-            first word comes out ~1.5 s sooner.  Turn this off to fall back to
-            the batch request (whole reply downloaded, then played).
+            Play each PCM block as it arrives instead of waiting for the whole
+            reply to be synthesized, so the first word comes out ~1 s sooner.
+            Turn this off to use the batch request.
 
-    config TTS_BASE_URL
-        string "TTS endpoint URL"
-        default "https://api.siliconflow.cn/v1/audio/speech"
+    config VOICE_TTS_WS
+        bool "Use the WebSocket streaming TTS protocol"
+        default y
         help
-            OpenAI-compatible /audio/speech endpoint.  The request asks for
-            response_format=pcm and sample_rate=16000.
+            Connect to wss://api.deepseek.com/v1/tools/tts, send the reply text
+            as {\"event\":\"text\"} messages followed by {\"event\":\"finish_text\"},
+            and play the binary PCM frames as they arrive.  The server sends
+            raw 16-bit mono PCM at 24 kHz; the board resamples to 16 kHz for the
+            ES8311 path.  When this is off, or the WebSocket handshake fails,
+            the same endpoint is used with a streaming POST (format=pcm).
 
     config TTS_API_KEY
-        string "TTS API key (empty = reuse the ASR key)"
+        string "TTS API key (empty = reuse the DeepSeek key)"
         default ""
-        help
-            Leave empty to reuse CONFIG_ASR_API_KEY - both are SiliconFlow
-            services, and the build script already fills the ASR key from
-            config/siliconflow.key.
 
-    config TTS_MODEL
-        string "TTS model"
-        default "FunAudioLLM/CosyVoice2-0.5B"
+    config TTS_VOICE_STELLA
+        bool "Voice: stella (female)"
+        default y
+    config TTS_VOICE_TIDE
+        bool "Voice: tide (male)"
 
-    config TTS_VOICE
-        string "TTS voice (model:voice)"
-        default "FunAudioLLM/CosyVoice2-0.5B:claire"
-        help
-            Presets include female anna/bella/claire/diana and male
-            alex/benjamin/charles/david.  The model prefix is required.
-
-    config TTS_SPEED_X100
-        int "Cloud TTS speed x100 (100 = normal)"
-        range 25 400
-        default 100
-
-    config TTS_GAIN_DB
-        int "Cloud TTS gain in dB"
-        range -10 10
-        default 0
+    config TTS_VOICE_ID
+        string
+        default "stella" if TTS_VOICE_STELLA
+        default "tide" if TTS_VOICE_TIDE
 
     config TTS_MAX_SECONDS
         int "Longest single synthesized reply (seconds)"
         range 5 60
         default 30
         help
-            PSRAM cap for one cloud reply; the prompt keeps replies to a
-            couple of sentences, so this is only a safety net.
+            Ring-buffer / download cap for one cloud reply; the persona prompt
+            keeps replies to a couple of sentences, so this is only a safety
+            net.  The API itself allows up to 30 minutes per request.
+
+    config TTS_PREBUFFER_MS
+        int "Playback prebuffer before the first word (ms)"
+        range 0 3000
+        default 700
+        help
+            How much audio to collect before starting playback.  The WebSocket
+            stream delivers small frames at a fairly even rate, so a short
+            prebuffer is enough; raise it on a congested Wi-Fi link.
+
 
     # Boot-time conversation behaviour.  ASSISTANT answers every utterance (the
     # original behaviour: no wake word, just talk to it).  MONITOR never

@@ -7,8 +7,14 @@
 #   Copy-Item config\deepseek.defaults.template config\deepseek.defaults
 #
 # The real file is intentionally NOT created for you: it holds a secret and
-# should stay local.  It is passed on the build command line via
+# should stay local.  Both build scripts regenerate it from
+# config/deepseek.key and pass it on the build command line via
 #   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;<board>;<hosted>;<wifi>;config\deepseek.defaults"
+#
+# The same key drives the whole DeepSeek full suite: chat (deep thinking, web
+# search, URL reading, safety check, conversation titles), ASR, streaming TTS,
+# Search, Fetch, OCR and the Files API.
 CONFIG_DEEPSEEK_API_KEY="sk-REPLACE-ME"
 CONFIG_DEEPSEEK_MODEL="deepseek-flash"
-CONFIG_DEEPSEEK_MAX_TOKENS=400
+CONFIG_DEEPSEEK_MAX_TOKENS=900
+CONFIG_DEEPSEEK_TEMPERATURE_X100=80

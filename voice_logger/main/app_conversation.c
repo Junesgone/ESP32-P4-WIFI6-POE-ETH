@@ -113,7 +113,9 @@ static const char *SYSTEM_PROMPT =
     "插话：外面下着雨呢，带把伞吧。\n"
     "插话：那家肠粉店涨到十二块了。";
 
-static char s_city[32] = "中山";
+/* Privacy: the repository carries only the country-level default; the real
+ * city is set at runtime ("city 北京") and stored in NVS on the board. */
+static char s_city[32] = "中国";
 
 const char *conversation_city(void)
 {
@@ -141,7 +143,7 @@ static void conversation_load_city(void)
     if (nvs_open("conv", NVS_READONLY, &h) == ESP_OK) {
         size_t len = sizeof(s_city);
         if (nvs_get_str(h, "city", s_city, &len) != ESP_OK) {
-            snprintf(s_city, sizeof(s_city), "%s", "中山");
+            snprintf(s_city, sizeof(s_city), "%s", "中国");
         }
         nvs_close(h);
     }

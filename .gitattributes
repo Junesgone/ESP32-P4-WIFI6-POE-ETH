@@ -1,0 +1,8 @@
+# Normalise line endings: the sources are LF, checkouts on Windows keep LF too
+# (git converts on checkout only when the working tree needs CRLF).
+* text=auto eol=lf
+*.dat binary
+*.bin binary
+*.pdf binary
+*.stp binary
+*.dwg binary

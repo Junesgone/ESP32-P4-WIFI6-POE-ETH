@@ -26,5 +26,10 @@ dependencies:
   # cJSON is no longer bundled with ESP-IDF 6.x
   espressif/cjson:
     version: "^1.7.19"
+  # Streaming TTS: wss://api.deepseek.com/v1/tools/tts speaks RFC6455, so the
+  # board needs a WebSocket client (the component that used to live in
+  # esp-protocols).  Only one TLS session is ever open at a time on this board.
+  espressif/esp_websocket_client:
+    version: "^1.4.0"
   idf:
     version: ">=5.5"

@@ -149,6 +149,20 @@ esp_err_t wifi_connect(uint32_t timeout_ms)
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wc), TAG, "set_config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
 
+    /* Modem sleep (the IDF default, MIN_MODEM) parks the C6 radio between
+     * DTIM beacons, which delays downlink frames by 100-300 ms - long enough
+     * to starve the I2S ring during cloud TTS.  This board is PoE powered, so
+     * trade the power for a stable audio stream.  The call is forwarded to the
+     * C6 over the hosted RPC; if the slave does not implement it we just log
+     * and continue with the default. */
+    {
+        wifi_ps_type_t ps_before = WIFI_PS_MIN_MODEM;
+        esp_err_t get_err = esp_wifi_get_ps(&ps_before);
+        esp_err_t set_err = esp_wifi_set_ps(WIFI_PS_NONE);
+        ESP_LOGI(TAG, "wifi power save: was %d (get %s), set WIFI_PS_NONE -> %s",
+                 (int)ps_before, esp_err_to_name(get_err), esp_err_to_name(set_err));
+    }
+
     ESP_LOGI(TAG, "connecting to SSID '%s' ...", s_ssid);
     EventBits_t bits = xEventGroupWaitBits(s_events,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,

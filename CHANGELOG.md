@@ -4,6 +4,96 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.0.6 — 2026-11-14
+
+DeepSeek full-suite release: the whole DeepSeek App conversation stack now runs
+on the board through the new application APIs — no third-party LLM/ASR/TTS vendor
+is required any more.
+
+### Added
+
+- **Built-in web search** (`deepseek_web_search`) and **deep thinking search**:
+  thinking mode is on by default (`reasoning_effort` configurable low/high/max),
+  and with the web tool declared the service searches, opens pages and checks
+  facts across several reasoning steps before answering. Citations come back in
+  the last stream chunk and are logged.
+- **URL reading** (`deepseek_read_url`): links in the user message are fetched by
+  the service; the returned `server_tool_calls` are echoed back on the next turn
+  so a page that was read stays in context.
+- **File input**: Files API upload with server-side parsing
+  (`text_recognition` / `rich_layout_recognition`) followed by a
+  `{"type":"file","file_id":...}` content part — the same two-step flow as
+  uploading a file in the DeepSeek App. Images use `purpose=user_data`.
+- **Standalone tool APIs**, each usable on its own: `POST /v1/tools/search`,
+  `/v1/tools/fetch`, `/v1/tools/ocr`, `/files`, `/v1/tools/asr`,
+  `/v1/tools/tts`.
+- **Model content safety** (`safety_check: {"level":"high"}`): input and output
+  review; refusals are answered with a short spoken refusal.
+- **Conversation titles** (`title.enabled`, stored with the turn on the TF card)
+  and the **user-metadata marker** (`latest_reminder` with date, weekday, city,
+  platform and language).
+- **DeepSeek ASR** replaces SiliconFlow SenseVoice (`POST /v1/tools/asr`,
+  16 kHz mono WAV, language auto-detected, ≤ 8 MiB / 120 s).
+- **DeepSeek streaming TTS over WebSocket** replaces CosyVoice2:
+  `wss://api.deepseek.com/v1/tools/tts` sends `{"event":"text"}` chunks followed
+  by `{"event":"finish_text"}`, and the 24 kHz PCM frames are resampled to
+  16 kHz and played from a PSRAM jitter buffer as they arrive. A streaming HTTP
+  POST is the fallback; the on-board ESP-SR voice remains the offline fallback.
+  Voices: stella (female) / tide (male).
+- Serial console: `ds` status, `think`, `websearch`, `readurl`, `safety`,
+  `title`, `effort`, `fetch`, `ocr`, `askfile`, `asr`.
+- `tools/build_voice_logger.sh` — Linux/macOS build+flash script equivalent to
+  the PowerShell one.
+- The turn record on the TF card now carries a `ds` object with the finish
+  reason, search/link-read counts, thinking size, first-content latency,
+  citations and the conversation title.
+
+### Changed
+
+- One DeepSeek key drives chat, ASR, TTS and all tool APIs; the SiliconFlow key
+  is optional and only used by the legacy fallback path.
+- `app_deepseek.c` was rewritten around the full-suite request builder and the
+  extended SSE parser (thinking deltas, server tool progress, citations,
+  `server_tool_calls`, title, refusal). The SSE line buffer moved to PSRAM
+  because a search turn's final chunk can be 10–20 KB.
+- The client-side `web_search` function tool is no longer declared while the
+  built-in web-search tool is on (one search path, not two); it stays available
+  for the conversation supervisor.
+- Voiceprint, persona, speaker identification, AEC/VAD and the TF-card WAV/JSONL
+  logging are unchanged.
+- Firmware version bumped to **0.0.6**.
+
+### Fixed
+
+- `max_tokens` raised to 900: with thinking on, the reasoning tokens count
+  against it and 400 was truncating answers (`finish_reason: "length"`).
+- Citations and conversation titles are actually collected now that the SSE line
+  buffer can hold the final chunk.
+- The utterance worker now takes the same cloud lock as the serial console and
+  the supervisor. It used to run ASR + chat + TTS without it, so a console
+  command or an interjection could open a second mbedTLS session; that second
+  connection failed inside `mbedtls_ssl_setup` with `-0x008D`
+  (PSA_ERROR_INSUFFICIENT_MEMORY) and surfaced as "Connection failed, sock < 0".
+- All DeepSeek HTTPS/WSS clients (chat, ASR, TTS, Search, Fetch, OCR, Files) use
+  the pinned-certificate verifier; ASR and TTS previously used the plain CA
+  bundle and intermittently failed the handshake with `-0x3000`.
+- The TTS streaming POST sent `Authorization: Authorization: Bearer ...`
+  (the WebSocket-style header line was reused as the HTTP header value) and got
+  401; the two paths now build their headers correctly.
+- A non-ASCII checkout path (e.g. a Chinese home directory) broke ESP-IDF's
+  picolibc spec-file escaping; `tools/build_voice_logger.sh` now detects that
+  and keeps the build tree on an ASCII path.
+
+### Known issues
+
+- The WebSocket TTS handshake fails TLS certificate verification inside the
+  ESP-IDF WebSocket transport on this board (DigiCert root link rejected by the
+  chain builder under PSA memory pressure). Synthesis falls back to the streaming
+  HTTP POST, which works; see README section 6.3.
+- A deep-thinking search turn answers with 300-400 characters, which the TTS
+  then reads for ~20-30 s. The spoken-persona prompt asks for 1-3 sentences; the
+  service-side web tools still produce longer formatted answers.
+
 ## v0.0.5 — 2026-10-19
 
 Voiceprint accuracy release: discriminative weighting, session-balanced

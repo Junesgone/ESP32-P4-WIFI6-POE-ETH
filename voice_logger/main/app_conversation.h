@@ -39,7 +39,8 @@ void conversation_lock_cloud(void);
 void conversation_unlock_cloud(void);
 bool conversation_cloud_lock_held_by_current(void);
 
-/* City used when checking weather-like claims (default 中山, stored in NVS). */
+/* City used when checking weather-like claims (default 中国, stored in NVS;
+ * set it with the serial command "city <name>"). */
 const char *conversation_city(void);
 void conversation_set_city(const char *city);
 

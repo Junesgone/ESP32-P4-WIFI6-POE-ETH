@@ -1,19 +1,21 @@
 # config/ — build-time configuration fragments (no secrets committed)
 
-The build script (`tools/build_voice_logger.ps1`) regenerates `sdkconfig` from the
-fragments in this folder, then appends the key-derived fragments it writes itself.
+Both build scripts (`tools/build_voice_logger.ps1` on Windows,
+`tools/build_voice_logger.sh` on Linux/macOS) regenerate `sdkconfig` from the
+versioned fragments in this folder, plus one generated fragment derived from your
+local key file.
 
 ## What you must create locally
 
 | File | Required | Contents |
 |---|---|---|
-| `deepseek.key` | yes (LLM) | DeepSeek API key, one line |
-| `siliconflow.key` | recommended (ASR + cloud TTS) | SiliconFlow API key, one line |
-| `wifi_credentials.defaults` | yes | copy from `wifi_credentials.defaults.template` and fill SSID/password |
+| `deepseek.key` | **yes** | DeepSeek API key, one line. Drives chat (with deep thinking, web search, URL reading, safety, titles), ASR, TTS, Search, Fetch, OCR and the Files API. |
+| `wifi_credentials.defaults` | **yes** | copy from `wifi_credentials.defaults.template` and fill SSID/password |
+| `siliconflow.key` | optional | only for the legacy fallback ASR/TTS backend (menuconfig: `ASR_BASE_URL`, `TTS_API_KEY`) |
 
-The build script writes `deepseek.defaults`, `asr.defaults` and `tts.defaults` from the
-`.key` files every time it runs. **All of these files are git-ignored** — never commit
-them and never paste real keys into the templates.
+The build script writes `deepseek.defaults` from `deepseek.key` on every run.
+**Every `.key` file and every generated `*.defaults` is git-ignored** — never
+commit them and never paste real keys into the templates.
 
 ## Versioned fragments (safe to commit)
 
@@ -31,7 +33,19 @@ them and never paste real keys into the templates.
 ```powershell
 cd config
 Set-Content deepseek.key 'sk-...'
-Set-Content siliconflow.key 'sk-...'
 Copy-Item wifi_credentials.defaults.template wifi_credentials.defaults
 notepad wifi_credentials.defaults
 ```
+
+```bash
+cd config
+printf '%s' 'sk-...' > deepseek.key
+cp wifi_credentials.defaults.template wifi_credentials.defaults
+${EDITOR:-nano} wifi_credentials.defaults
+```
+
+The DeepSeek full-suite features (thinking, `deepseek_web_search`,
+`deepseek_read_url`, `safety_check`, conversation titles, TTS WebSocket) and all
+their endpoint URLs are Kconfig options under
+`menuconfig → Voice logger configuration`; the defaults are sane and the serial
+console can flip them at runtime.

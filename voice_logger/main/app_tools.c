@@ -12,6 +12,7 @@
 
 #include "app_audio.h"
 #include "app_ble.h"
+#include "app_deepseek.h"
 #include "app_reminder.h"
 #include "app_speaker_id.h"
 #include "app_storage.h"
@@ -54,195 +55,22 @@ static cJSON *add_tool(cJSON *arr, const char *name, const char *desc, const cha
 #define P_OBJ(props, req) "{\"type\":\"object\",\"properties\":{" props "},\"required\":[" req "]}"
 #define P_NONE            "{\"type\":\"object\",\"properties\":{}}"
 
-/* DeepSeek web search is a separate REST API, not a server-side tool that the
- * chat model can invoke by itself:
- *     POST https://api.deepseek.com/v1/tools/search
- *     {"query": "...", "count": n, "need_content": false}
- *  -> {"results":[{title,url,snippet,summary,date,authority,...}]}
+/* 联网搜索 has two paths on the full-suite API:
  *
- * So 联网搜索 is implemented like every other capability here: the model asks
- * for it through function calling, the board performs the HTTP request and
- * feeds the ranked results back as a tool message.  Without this the model has
- * no way to reach the internet at all - /chat/completions has no built-in
- * search.
+ *   - the built-in server-side tool {"type":"deepseek_web_search"} declared by
+ *     app_deepseek.c (the service searches and answers with citations; with
+ *     thinking enabled it is deep thinking search), and
+ *   - this client-side function tool, which calls the standalone
+ *     POST /v1/tools/search and feeds the ranked results back as a tool
+ *     message.  It is what the conversation supervisor uses to fact-check a
+ *     claim, and it stays available when the built-in tool is switched off.
  */
-#define DEEPSEEK_SEARCH_URL "https://api.deepseek.com/v1/tools/search"
-#define SEARCH_TIMEOUT_MS   15000
 #define SEARCH_MAX_RESULTS  5
 
-/* One HTTPS POST with a raw JSON body; returns the parsed response or NULL. */
-static cJSON *http_post_json(const char *url, const char *body)
-{
-    char auth[160];
-    snprintf(auth, sizeof(auth), "Bearer %s", CONFIG_DEEPSEEK_API_KEY);
-
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = SEARCH_TIMEOUT_MS,
-        .buffer_size = 2048,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) {
-        return NULL;
-    }
-    esp_http_client_set_header(c, "Content-Type", "application/json");
-    esp_http_client_set_header(c, "Authorization", auth);
-
-    int blen = (int)strlen(body);
-    if (esp_http_client_open(c, blen) != ESP_OK) {
-        ESP_LOGE(TAG, "search connect failed");
-        esp_http_client_cleanup(c);
-        return NULL;
-    }
-    esp_http_client_write(c, body, blen);
-
-    int total = esp_http_client_fetch_headers(c);
-    int status = esp_http_client_get_status_code(c);
-    size_t cap = (size_t)(total > 0 ? total : 4096) + 1;
-    char *resp = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!resp) {
-        resp = malloc(cap);
-    }
-    if (!resp) {
-        esp_http_client_close(c);
-        esp_http_client_cleanup(c);
-        return NULL;
-    }
-    size_t used = 0;
-    while (used + 1 < cap) {
-        int n = esp_http_client_read(c, resp + used, (int)(cap - 1 - used));
-        if (n <= 0) {
-            break;
-        }
-        used += (size_t)n;
-    }
-    resp[used] = 0;
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-
-    if (status != 200) {
-        ESP_LOGE(TAG, "search HTTP %d: %.160s", status, resp);
-        free(resp);
-        return NULL;
-    }
-    cJSON *root = cJSON_Parse(resp);
-    free(resp);
-    return root;
-}
-
-/* Copy at most max_bytes of src, never splitting a UTF-8 sequence.
- *
- * "%.*s" counts BYTES, so a byte limit slices Chinese characters in half.  The
- * result is invalid UTF-8, and DeepSeek rejects the entire follow-up request
- * with:
- *     HTTP 400 messages[3].content: invalid unicode code point
- * which is why "最近有什么AI新闻" used to produce no answer even though the
- * search itself had succeeded. */
-static void utf8_copy_limited(char *dst, size_t dst_size, const char *src, size_t max_bytes)
-{
-    if (!dst || dst_size == 0) {
-        return;
-    }
-    if (!src) {
-        dst[0] = 0;
-        return;
-    }
-    size_t n = strlen(src);
-    if (n > max_bytes) {
-        n = max_bytes;
-    }
-    /* Back off while the cut lands on a continuation byte (10xxxxxx). */
-    while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80) {
-        n--;
-    }
-    if (n >= dst_size) {
-        n = dst_size - 1;
-    }
-    memcpy(dst, src, n);
-    dst[n] = 0;
-}
-
-/* Turn the ranked JSON into compact text the model can use in a spoken answer:
- * title + url + a short excerpt, at most SEARCH_MAX_RESULTS entries. */
-static esp_err_t deepseek_web_search(const char *query, char *out, size_t outlen)
-{
-    if (!CONFIG_DEEPSEEK_API_KEY[0]) {
-        snprintf(out, outlen, "没有配置 DeepSeek API key，无法联网搜索。");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "query", query);
-    cJSON_AddNumberToObject(req, "count", SEARCH_MAX_RESULTS);
-    cJSON_AddBoolToObject(req, "need_content", false);
-    char *body = cJSON_PrintUnformatted(req);
-    cJSON_Delete(req);
-    if (!body) {
-        snprintf(out, outlen, "搜索请求构造失败。");
-        return ESP_FAIL;
-    }
-
-    cJSON *root = NULL;
-    for (int attempt = 0; attempt < 3 && !root; attempt++) {
-        if (attempt) {
-            /* A TLS handshake needs AES DMA descriptors out of internal RAM.
-             * Within one turn the chat request has just released its own, and
-             * the pool is small, so the first search attempt can legitimately
-             * fail with "esp-aes: Failed to allocate memory for len descriptor".
-             * Give the descriptors a moment and try again. */
-            ESP_LOGW(TAG, "web_search attempt %d failed, retrying", attempt);
-            vTaskDelay(pdMS_TO_TICKS(1500));
-        }
-        root = http_post_json(DEEPSEEK_SEARCH_URL, body);
-    }
-    free(body);
-    if (!root) {
-        snprintf(out, outlen, "联网搜索请求失败（网络或接口错误）。");
-        return ESP_FAIL;
-    }
-
-    const cJSON *results = cJSON_GetObjectItemCaseSensitive(root, "results");
-    int n = cJSON_IsArray(results) ? cJSON_GetArraySize(results) : 0;
-    if (n <= 0) {
-        snprintf(out, outlen, "联网搜索没有找到 \"%.60s\" 的相关结果。", query);
-        cJSON_Delete(root);
-        return ESP_OK;
-    }
-
-    int off = snprintf(out, outlen, "联网搜索 \"%.60s\" 的结果：\n", query);
-    int shown = 0;
-    const cJSON *item = NULL;
-    cJSON_ArrayForEach(item, results) {
-        if (shown >= SEARCH_MAX_RESULTS || off >= (int)outlen - 220) {
-            break;
-        }
-        const cJSON *title = cJSON_GetObjectItemCaseSensitive(item, "title");
-        const cJSON *url = cJSON_GetObjectItemCaseSensitive(item, "url");
-        const cJSON *summary = cJSON_GetObjectItemCaseSensitive(item, "summary");
-        const cJSON *snippet = cJSON_GetObjectItemCaseSensitive(item, "snippet");
-        const char *blurb = cJSON_IsString(summary) ? summary->valuestring
-                          : (cJSON_IsString(snippet) ? snippet->valuestring : "");
-        shown++;
-        char blurb_buf[200];
-        char title_buf[160];
-        utf8_copy_limited(blurb_buf, sizeof(blurb_buf), blurb, 160);
-        utf8_copy_limited(title_buf, sizeof(title_buf),
-                          cJSON_IsString(title) ? title->valuestring : "", 120);
-        off += snprintf(out + off, outlen - (size_t)off, "%d. %s\n   %s\n   %s\n",
-                        shown, title_buf[0] ? title_buf : "(无标题)",
-                        cJSON_IsString(url) ? url->valuestring : "",
-                        blurb_buf);
-    }
-    cJSON_Delete(root);
-    ESP_LOGI(TAG, "web_search %s -> %d results", query, shown);
-    return ESP_OK;
-}
-
+/* Standalone Search API wrapper (also used by the serial console). */
 bool tools_web_search(const char *query, char *out, size_t outlen)
 {
-    return deepseek_web_search(query, out, outlen) == ESP_OK;
+    return deepseek_search(query, SEARCH_MAX_RESULTS, false, out, outlen) == ESP_OK;
 }
 
 cJSON *tools_spec(void)
@@ -266,6 +94,17 @@ cJSON *tools_spec(void)
              "不要凭记忆编造时效性内容。",
              P_OBJ("\"query\":{\"type\":\"string\",\"description\":\"搜索关键词，支持 site: lang: after: 等操作符\"}",
                    "\"query\""));
+
+    add_tool(arr, "read_url",
+             "抓取一个网页的标题和正文。用户给了具体链接、或需要看某个网址的内容时调用。",
+             P_OBJ("\"url\":{\"type\":\"string\",\"description\":\"http 或 https 链接\"}",
+                   "\"url\""));
+
+    add_tool(arr, "ocr_file",
+             "识别 TF 卡里的图片、PDF、Word 或 PPT 中的文字。用户说\"看看这张图\""
+             "\"读一下这个文件\"时调用，路径形如 /sdcard/xxx.pdf。",
+             P_OBJ("\"path\":{\"type\":\"string\",\"description\":\"文件在 TF 卡上的完整路径\"}",
+                   "\"path\""));
 
     add_tool(arr, "set_reminder",
              "给用户设置一个定时提醒，到点会主动开口说话。用户说\"十分钟后提醒我喝水\""
@@ -376,12 +215,37 @@ bool tools_execute(const char *name, const cJSON *args, char *result, size_t res
     }
 
     if (strcmp(name, "web_search") == 0) {
-        const cJSON *q = cJSON_GetObjectItem(args, "query");
-        if (!cJSON_IsString(q) || !q->valuestring[0]) {
+        const char *q = arg_str(args, "query");
+        if (!q || !q[0]) {
             snprintf(result, result_len, "要搜索什么内容？");
             return true;
         }
-        deepseek_web_search(q->valuestring, result, result_len);
+        deepseek_search(q, SEARCH_MAX_RESULTS, false, result, result_len);
+        return true;
+    }
+    if (strcmp(name, "read_url") == 0) {
+        const char *url = arg_str(args, "url");
+        if (!url || !url[0]) {
+            snprintf(result, result_len, "要读哪个链接？");
+            return true;
+        }
+        deepseek_fetch(url, result, result_len);
+        return true;
+    }
+    if (strcmp(name, "ocr_file") == 0) {
+        const char *path = arg_str(args, "path");
+        if (!path || !path[0]) {
+            snprintf(result, result_len, "要读哪个文件？");
+            return true;
+        }
+        /* Tool results are fed back into the model, so the OCR output is
+         * capped; the console command prints the full text. */
+        static char ocr_buf[2048];
+        if (deepseek_ocr(path, false, ocr_buf, sizeof(ocr_buf)) == ESP_OK) {
+            snprintf(result, result_len, "%s", ocr_buf);
+        } else {
+            snprintf(result, result_len, "读取 %s 失败（文件不在卡上或格式不支持）。", path);
+        }
         return true;
     }
     if (strcmp(name, "set_reminder") == 0) {

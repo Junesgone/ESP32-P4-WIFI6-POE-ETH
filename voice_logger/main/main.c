@@ -53,6 +53,10 @@
 
 static const char *TAG = "voice";
 
+/* Raw JSON members for the TF-card record; defined next to the console
+ * helpers below but used by the utterance worker as well. */
+static void ds_meta_json(char *out, size_t len);
+
 #define FRAME_MS       20
 #define FRAME_SAMPLES  (AUDIO_SAMPLE_RATE * FRAME_MS / 1000)   /* 320, plain I2S path */
 #define FRAME_STEREO   (FRAME_SAMPLES * AUDIO_CHANNELS)
@@ -80,9 +84,21 @@ static int      s_preroll_head;
 static int      s_preroll_count;
 static unsigned s_utterance_no;
 /* While the speaker is still ringing (and the room is still echoing), the mic
- * hears our own reply.  There is no AEC in this build, so simply ignore input
- * for a moment after each spoken reply - otherwise the board talks to itself. */
-static int64_t s_suppress_until_us;
+ * hears our own reply.  The AEC does not cancel the speaker tail, so input is
+ * ignored for a moment after each spoken reply - otherwise the board talks to
+ * itself.  This is written by the utterance worker and read by the capture
+ * loop: without volatile the compiler is free to hoist the load out of the
+ * capture loop and the gate silently stops working. */
+static volatile int64_t s_suppress_until_us;
+/* Cloud TTS is requested seconds before the first PCM reaches the speaker, so
+ * a deadline anchored on "reply queued" expires while the board is still
+ * talking.  Watch the real playback state and mute the mic after the tail. */
+static volatile bool s_tts_was_speaking;
+/* What the board last said out loud, and when it finished: used to drop ASR
+ * results that are nothing but the board's own voice coming back. */
+static int64_t s_last_spoken_us;
+static char    s_last_spoken[192];
+static bool self_echo_text(const char *text);
 /* While the AEC calibration sweep owns the I2S channels the capture loop must
  * keep its hands off them. */
 static volatile bool s_calibrating;
@@ -182,6 +198,10 @@ static void playback(const int16_t *mono, size_t n)
 }
 #endif
 
+/* Defined with the other UTF-8 helpers below; declared here because the
+ * utterance path (which runs first) gates ASR results on it. */
+static bool asr_text_has_content(const char *s);
+
 static void process_utterance(const int16_t *pcm, size_t pcm_len,
                               const int16_t *raw, size_t raw_len, int peak_rms)
 {
@@ -259,6 +279,14 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
     char text[768] = { 0 };
     char reply[3072] = { 0 };
 
+    /* Serialise the whole cloud part of the turn (ASR + LLM + reply TTS) with
+     * the console commands and the supervisor.  This used to be missing here
+     * only: two concurrent mbedTLS sessions do not fit on this board, and the
+     * second one failed inside mbedtls_ssl_setup with -0x008D
+     * (PSA_ERROR_INSUFFICIENT_MEMORY), i.e. "Connection failed, sock < 0".
+     * tts_say() detects that this task already holds the lock and does not
+     * take it twice. */
+    conversation_lock_cloud();
     esp_err_t asr_err = ESP_FAIL;
     if (asr_configured() && !s_asr_disabled) {
         int64_t asr_t0 = esp_timer_get_time();
@@ -269,14 +297,36 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
          * lock) for another 20 s while the capture queue overflows - the board
          * looks dead and drops the next sentences. */
         if (asr_err != ESP_OK && asr_ms < 5000) {
-            ESP_LOGW(TAG, "ASR failed in %lld ms (%s), retrying once",
-                     (long long)asr_ms, esp_err_to_name(asr_err));
-            vTaskDelay(pdMS_TO_TICKS(800));
-            asr_err = asr_transcribe(pcm, pcm_len, AUDIO_SAMPLE_RATE, text, sizeof(text));
+            /* Two fast retries: a TLS setup failure is often a fragmented
+             * internal heap, and the next attempt usually finds the block. */
+            for (int attempt = 0; attempt < 2 && asr_err != ESP_OK; attempt++) {
+                ESP_LOGW(TAG, "ASR failed in %lld ms (%s), retry %d/2",
+                         (long long)asr_ms, esp_err_to_name(asr_err), attempt + 1);
+                vTaskDelay(pdMS_TO_TICKS(1200 * (attempt + 1)));
+                asr_err = asr_transcribe(pcm, pcm_len, AUDIO_SAMPLE_RATE, text,
+                                         sizeof(text));
+            }
         } else if (asr_err != ESP_OK) {
             ESP_LOGW(TAG, "ASR failed after %lld ms (%s), not retrying",
                      (long long)asr_ms, esp_err_to_name(asr_err));
         }
+    }
+
+    /* Non-speech ASR artefacts ("🎼.", "。") must not start a reply turn. */
+    if (asr_err == ESP_OK && text[0] && !asr_text_has_content(text)) {
+        ESP_LOGW(TAG, "dropping content-free ASR result: %.80s", text);
+        text[0] = 0;
+    }
+
+    /* Own-voice guard.  With the cloud voice engine the reply is produced
+     * seconds before it is played, and the analogue mic still hears the
+     * speaker tail.  Transcribing that tail made the board answer itself:
+     * it said "抱歉，刚才没整理出答案…", heard it, failed the same way and said
+     * the same sentence again - forever.  Drop anything that reproduces the
+     * canned line or a run of characters from what the board just said. */
+    if (asr_err == ESP_OK && text[0] && self_echo_text(text)) {
+        ESP_LOGW(TAG, "dropping self-echo ASR result: %.80s", text);
+        text[0] = 0;
     }
 
     if (asr_err == ESP_OK && text[0]) {
@@ -304,6 +354,8 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
             /* Remember what was just said so the supervisor does not repeat the
              * same correction a few seconds later. */
             conversation_note_reply(reply);
+            snprintf(s_last_spoken, sizeof(s_last_spoken), "%.180s", reply);
+            s_last_spoken_us = esp_timer_get_time();
             if (!spoken && tts_ready()) {
                 /* Fallback text (or TTS was not ready mid-stream): say it now. */
                 tts_say(reply);
@@ -335,7 +387,13 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
     }
 
 
-    storage_append_turn(rel, dur_ms, peak_rms, face, speaker, text, reply);
+    conversation_unlock_cloud();
+
+    {
+        static char meta[768];
+        ds_meta_json(meta, sizeof(meta));
+        storage_append_turn(rel, dur_ms, peak_rms, face, speaker, text, reply, meta);
+    }
     ESP_LOGI(TAG, "utterance #%u  %.1f s  peak_rms=%d  face=%s  speaker=%s  -> %s",
              ++s_utterance_no, dur_ms / 1000.0, peak_rms, face, speaker, rel);
 
@@ -597,6 +655,81 @@ static bool utf8_is_text(const char *s)
     return p != (const unsigned char *)s;
 }
 
+/* ASR occasionally turns non-speech audio into a "sentence" that contains no
+ * words at all - today's noise became "🎼." and started a whole cloud reply.
+ * Keep real short answers ("嗯", "好", numbers) but reject results with zero
+ * letters/CJK characters. */
+static bool asr_text_has_content(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    int content = 0;
+    while (*p) {
+        uint32_t cp;
+        int extra;
+        if (*p < 0x80) {
+            cp = *p;
+            extra = 0;
+        } else if ((*p & 0xE0) == 0xC0) {
+            cp = *p & 0x1F;
+            extra = 1;
+        } else if ((*p & 0xF0) == 0xE0) {
+            cp = *p & 0x0F;
+            extra = 2;
+        } else if ((*p & 0xF8) == 0xF0) {
+            cp = *p & 0x07;
+            extra = 3;
+        } else {
+            p++;
+            continue;
+        }
+        p++;
+        for (int i = 0; i < extra && (*p & 0xC0) == 0x80; i++, p++) {
+            cp = (cp << 6) | (*p & 0x3F);
+        }
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') ||
+            (cp >= '0' && cp <= '9') ||
+            (cp >= 0x00C0 && cp <= 0x02AF) ||      /* Latin-1 supplement / extended */
+            (cp >= 0x0370 && cp <= 0x052F) ||      /* Greek, Cyrillic */
+            (cp >= 0x3040 && cp <= 0x30FF) ||      /* hiragana, katakana */
+            (cp >= 0x3400 && cp <= 0x4DBF) ||      /* CJK ext A */
+            (cp >= 0x4E00 && cp <= 0x9FFF) ||      /* CJK unified */
+            (cp >= 0xAC00 && cp <= 0xD7AF)) {      /* Hangul */
+            content++;
+        }
+    }
+    return content > 0;
+}
+
+/* Did this ASR result come out of our own speaker?  Speech recognition rarely
+ * reproduces a sentence verbatim, so match any 3-character (9 byte) run from
+ * the last reply.  The canned transport-failure line is matched by a
+ * distinctive fragment because it is the one sentence that must never be
+ * answered - answering it is what turned a network hiccup into a loop. */
+static bool self_echo_text(const char *text)
+{
+    if (esp_timer_get_time() - s_last_spoken_us > (int64_t)20 * 1000 * 1000) {
+        return false;
+    }
+    if (strstr(text, "没整理出答案") != NULL ||
+        strstr(text, "再说一次好不好") != NULL ||
+        strstr(text, "再说一遍好不好") != NULL) {
+        return true;
+    }
+    size_t n = strlen(text);
+    if (n < 9 || s_last_spoken[0] == 0) {
+        return false;
+    }
+    char probe[10];
+    for (size_t i = 0; i + 9 <= n; i += 3) {
+        memcpy(probe, text + i, 9);
+        probe[9] = 0;
+        if (strstr(s_last_spoken, probe) != NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Text path: proves DeepSeek + the SD log end to end before any ASR exists.
  * Once ESP-SR TTS is wired in, the reply is spoken here as well. */
 /* --------------------- AEC reference delay calibration ------------------- */
@@ -750,6 +883,68 @@ static void run_aec_calibration(void)
     free(prn); free(play); free(mic_st); free(mic);
 }
 
+/* One-line report of what the full-suite service did during the last turn:
+ * finish reason, search / link-read steps, thinking size, citations and the
+ * conversation title.  This is the visible proof that 联网搜索 / 深度思考搜索 /
+ * 读链接 / 安全校验 actually ran, without having to trust the reply text. */
+static void print_turn_info(void)
+{
+    const ds_turn_info_t *ti = deepseek_turn_info();
+    if (!ti->finish[0] && !ti->searches && !ti->link_reads && ti->n_cites == 0 &&
+        ti->reasoning_chars == 0) {
+        return;
+    }
+    printf("   [finish=%s", ti->finish[0] ? ti->finish : "?");
+    if (ti->searches)        printf(" 搜索%d次", ti->searches);
+    if (ti->link_reads)      printf(" 读链接%d个", ti->link_reads);
+    if (ti->steps)           printf(" %d步", ti->steps);
+    if (ti->reasoning_chars) printf(" 思考%d字", ti->reasoning_chars);
+    if (ti->first_content_ms >= 0) printf(" 首字%lldms", (long long)ti->first_content_ms);
+    if (ti->refused)         printf(" 内容安全拒答");
+    printf("]\n");
+    if (ti->title[0]) {
+        printf("   [对话标题：%s]\n", ti->title);
+    }
+    for (int i = 0; i < ti->n_cites; i++) {
+        printf("   [引用%d] %s\n", i + 1, ti->cites[i]);
+    }
+}
+
+/* Raw JSON members for the TF-card record (see storage_append_turn). */
+static void ds_meta_json(char *out, size_t len)
+{
+    const ds_turn_info_t *ti = deepseek_turn_info();
+    char title[200] = { 0 };
+    char finish[32] = { 0 };
+    char c0[220] = { 0 };
+    char c1[220] = { 0 };
+    char c2[220] = { 0 };
+    size_t p = 0;
+    for (size_t i = 0; i < sizeof(title) - 1 && ti->title[i]; i++) {
+        char c = ti->title[i];
+        title[p++] = (c == '"' || c == '\\') ? '_' : (char)c;
+    }
+    p = 0;
+    for (size_t i = 0; i < sizeof(finish) - 1 && ti->finish[i]; i++) {
+        finish[p++] = ti->finish[i];
+    }
+    char *dst[3] = { c0, c1, c2 };
+    for (int i = 0; i < 3; i++) {
+        p = 0;
+        for (size_t k = 0; k < 210 && ti->cites[i][k]; k++) {
+            char c = ti->cites[i][k];
+            dst[i][p++] = (c == '"' || c == '\\') ? '/' : (char)c;
+        }
+    }
+    snprintf(out, len,
+             "\"ds\":{\"title\":\"%s\",\"finish\":\"%s\",\"search\":%d,"
+             "\"read\":%d,\"steps\":%d,\"think\":%d,\"first_ms\":%lld,"
+             "\"refused\":%s,\"cites\":[\"%s\",\"%s\",\"%s\"]},",
+             title, finish, ti->searches, ti->link_reads, ti->steps,
+             ti->reasoning_chars, (long long)ti->first_content_ms,
+             ti->refused ? "true" : "false", c0, c1, c2);
+}
+
 static void on_console_line(const char *line)
 {
     if (!utf8_is_text(line)) {
@@ -771,7 +966,7 @@ static void on_console_line(const char *line)
         esp_err_t e = storage_save_wav(tone, N, AUDIO_SAMPLE_RATE, 1000, rel, sizeof(rel));
         printf("storage_save_wav -> %s  %s\n", esp_err_to_name(e), e == ESP_OK ? rel : "（失败）");
         if (e == ESP_OK) {
-            e = storage_append_turn(rel, 1000, 3000, "unknown", "test", "wavtest", "自检录音");
+            e = storage_append_turn(rel, 1000, 3000, "unknown", "test", "wavtest", "自检录音", NULL);
             printf("storage_append_turn -> %s\n", esp_err_to_name(e));
         }
         return;
@@ -871,7 +1066,10 @@ static void on_console_line(const char *line)
         conversation_note_turn_end();
         if (ask_err == ESP_OK) {
             conversation_note_reply(reply);
+            snprintf(s_last_spoken, sizeof(s_last_spoken), "%.180s", reply);
+            s_last_spoken_us = esp_timer_get_time();
             printf("<< %s%s\n", reply, spoken ? "   [已流式朗读]" : "");
+            print_turn_info();
         } else {
             printf("!! DeepSeek 失败\n");
         }
@@ -894,12 +1092,18 @@ static void on_console_line(const char *line)
     if (strcmp(line, "tts") == 0) {
         printf("* 引擎: %s（auto=有网走云端，没网走板载）\n", tts_engine_name());
         if (tts_cloud_configured()) {
-            printf("* 云端: %s  音色 %s  语速 %d%%  增益 %d dB\n",
+            printf("* 云端: %s  音色 %s  合成方式 %s\n",
                    tts_cloud_active() ? "可用" :
                    (wifi_connected() ? "已配置（当前已关闭）" : "已配置（Wi-Fi 未连接）"),
-                   tts_cloud_voice(), CONFIG_TTS_SPEED_X100, CONFIG_TTS_GAIN_DB);
+                   tts_cloud_voice(),
+#if CONFIG_VOICE_TTS_WS
+                   "DeepSeek WebSocket 流式"
+#else
+                   "DeepSeek HTTP 流式"
+#endif
+                   );
         } else {
-            printf("* 云端: 未配置（没有 SiliconFlow key）\n");
+            printf("* 云端: 未配置（没有 DeepSeek key）\n");
         }
         printf("* 板载 ESP-SR: %s，语速 %u\n", tts_ready() ? "就绪" : "不可用",
                tts_local_speed());
@@ -920,7 +1124,7 @@ static void on_console_line(const char *line)
         } else if (strncmp(mode, "voice ", 6) == 0 && mode[6]) {
             tts_cloud_set_voice(mode + 6);
             printf("* 云端音色：%s\n", tts_cloud_voice());
-            printf("* 女声 anna/bella/claire/diana，男声 alex/benjamin/charles/david\n");
+            printf("* DeepSeek 音色：女声 stella、男声 tide\n");
             printf("* 试听: say 你好呀，我在呢\n");
         } else {
             printf("* 用法: tts auto | tts cloud | tts local | tts voice <音色>\n");
@@ -1124,6 +1328,279 @@ static void on_console_line(const char *line)
         free(buf);
         return;
     }
+    if (strncmp(line, "loglevel ", 9) == 0) {
+        /* Debug aid: raise one tag's log level at runtime, e.g.
+         *   loglevel HTTP_CLIENT debug
+         *   loglevel esp-tls debug
+         * Levels: none 0, error 1, warn 2, info 3, debug 4, verbose 5. */
+        char tag[40];
+        char lvl[16];
+        int n = sscanf(line + 9, "%39s %15s", tag, lvl);
+        if (n >= 1) {
+            int level = (n >= 2) ? atoi(lvl) : 4;
+            if (level < 0) {
+                level = 0;
+            }
+            if (level > 5) {
+                level = 5;
+            }
+            esp_log_level_set(tag, (esp_log_level_t)level);
+            printf("* log level: %s -> %d\n", tag, level);
+        } else {
+            printf("* 用法: loglevel <tag> <0-5>\n");
+        }
+        return;
+    }
+
+    /* ---------------- DeepSeek full-suite controls & tools -------------- */
+    if (strncmp(line, "think", 5) == 0 && (line[5] == 0 || line[5] == ' ')) {
+        const ds_features_t *ft = deepseek_features();
+        if (line[5] == 0) {
+            printf("* 深度思考: %s（effort %s）；内置联网搜索: %s（两者都开=深度思考搜索）\n",
+                   ft->thinking ? "开" : "关", deepseek_effort(),
+                   ft->web_search ? "开" : "关");
+            printf("* 读链接: %s；安全校验: %s；对话标题: %s\n",
+                   ft->read_url ? "开" : "关", ft->safety ? "high" : "关",
+                   ft->title ? "开" : "关");
+            printf("* 用法: think on|off  websearch on|off  readurl on|off  "
+                   "safety on|off  title on|off  effort low|high|max\n");
+        } else if (strcmp(line + 6, "on") == 0) {
+            deepseek_set_thinking(true);
+            printf("* 深度思考已开启（配合内置联网搜索即为深度思考搜索）\n");
+        } else if (strcmp(line + 6, "off") == 0) {
+            deepseek_set_thinking(false);
+            printf("* 深度思考已关闭（联网搜索变成普通搜索）\n");
+        }
+        return;
+    }
+    if (strncmp(line, "websearch", 9) == 0 && (line[9] == 0 || line[9] == ' ')) {
+        const char *v = line + 9;
+        while (*v == ' ') {
+            v++;
+        }
+        if (strcmp(v, "on") == 0) {
+            deepseek_set_web_search(true);
+            printf("* 内置联网搜索工具已开启\n");
+        } else if (strcmp(v, "off") == 0) {
+            deepseek_set_web_search(false);
+            printf("* 内置联网搜索工具已关闭（函数工具 web_search 仍可用）\n");
+        } else {
+            printf("* 用法: websearch on|off\n");
+        }
+        return;
+    }
+    if (strncmp(line, "readurl", 7) == 0 && (line[7] == 0 || line[7] == ' ')) {
+        const char *v = line + 7;
+        while (*v == ' ') {
+            v++;
+        }
+        if (strcmp(v, "on") == 0) {
+            deepseek_set_read_url(true);
+            printf("* 内置读链接工具已开启\n");
+        } else if (strcmp(v, "off") == 0) {
+            deepseek_set_read_url(false);
+            printf("* 内置读链接工具已关闭\n");
+        } else {
+            printf("* 用法: readurl on|off\n");
+        }
+        return;
+    }
+    if (strncmp(line, "safety", 6) == 0 && (line[6] == 0 || line[6] == ' ')) {
+        const char *v = line + 6;
+        while (*v == ' ') {
+            v++;
+        }
+        if (strcmp(v, "on") == 0) {
+            deepseek_set_safety(true);
+            printf("* 模型安全校验已开启（safety_check high）\n");
+        } else if (strcmp(v, "off") == 0) {
+            deepseek_set_safety(false);
+            printf("* 模型安全校验已关闭\n");
+        } else {
+            printf("* 用法: safety on|off\n");
+        }
+        return;
+    }
+    if (strncmp(line, "title", 5) == 0 && (line[5] == 0 || line[5] == ' ')) {
+        const char *v = line + 5;
+        while (*v == ' ') {
+            v++;
+        }
+        if (strcmp(v, "on") == 0) {
+            deepseek_set_title(true);
+            printf("* 对话标题已开启（下一轮开始请求）\n");
+        } else if (strcmp(v, "off") == 0) {
+            deepseek_set_title(false);
+            printf("* 对话标题已关闭\n");
+        } else if (strcmp(v, "reset") == 0) {
+            deepseek_reset_history();
+            printf("* 对话历史与标题已清空\n");
+        } else if (v[0] == 0) {
+            printf("* 对话标题：%s\n",
+                   deepseek_title()[0] ? deepseek_title() : "（还没有）");
+        } else {
+            printf("* 用法: title on|off|reset\n");
+        }
+        return;
+    }
+    if (strncmp(line, "effort", 6) == 0 && (line[6] == 0 || line[6] == ' ')) {
+        const char *v = line + 6;
+        while (*v == ' ') {
+            v++;
+        }
+        if (v[0] == 0) {
+            printf("* 思考强度：%s（low / high / max）\n", deepseek_effort());
+        } else if (deepseek_set_effort(v)) {
+            printf("* 思考强度：%s\n", deepseek_effort());
+        } else {
+            printf("* 用法: effort low|high|max\n");
+        }
+        return;
+    }
+    if (strncmp(line, "fetch ", 6) == 0 && line[6]) {
+        char *buf = heap_caps_malloc(8000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!buf) {
+            buf = malloc(8000);
+        }
+        if (!buf) {
+            printf("!! out of memory\n");
+            return;
+        }
+        printf("* 读取网页：%s\n", line + 6);
+        conversation_lock_cloud();
+        esp_err_t e = deepseek_fetch(line + 6, buf, 8000);
+        conversation_unlock_cloud();
+        if (e == ESP_OK) {
+            printf("%s\n", buf);
+        } else {
+            printf("!! 读取网页失败（网络或接口错误）\n");
+        }
+        free(buf);
+        return;
+    }
+    if (strncmp(line, "ocr ", 4) == 0 && line[4]) {
+        bool rich = strstr(line + 4, " rich") != NULL;
+        char *buf = heap_caps_malloc(16000, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!buf) {
+            buf = malloc(16000);
+        }
+        if (!buf) {
+            printf("!! out of memory\n");
+            return;
+        }
+        printf("* OCR：%s（%s）\n", line + 4, rich ? "保留版面图表" : "纯文字");
+        conversation_lock_cloud();
+        esp_err_t e = deepseek_ocr(line + 4, rich, buf, 16000);
+        conversation_unlock_cloud();
+        if (e == ESP_OK) {
+            printf("%s\n", buf);
+        } else {
+            printf("!! OCR 失败（文件不在卡上、太大或格式不支持）\n");
+        }
+        free(buf);
+        return;
+    }
+    if (strncmp(line, "askfile ", 8) == 0 && line[8]) {
+        /* 文件输入: upload (the service parses it) then one chat request that
+         * references the file_id, then speak the answer.  Path is the first
+         * token, the rest is the question. */
+        char path[160];
+        const char *q = line + 8;
+        size_t pl = 0;
+        while (q[pl] && q[pl] != ' ' && pl < sizeof(path) - 1) {
+            pl++;
+        }
+        memcpy(path, q, pl);
+        path[pl] = 0;
+        while (*q && *q != ' ') {
+            q++;
+        }
+        while (*q == ' ') {
+            q++;
+        }
+        char *reply = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!reply) {
+            reply = malloc(4096);
+        }
+        if (!reply) {
+            printf("!! out of memory\n");
+            return;
+        }
+        printf("* 文件输入：%s%s%s\n", path, *q ? "  问题：" : "", q);
+        conversation_note_turn_start();
+        conversation_lock_cloud();
+        esp_err_t e = deepseek_ask_file(path, q, reply, 4096);
+        conversation_unlock_cloud();
+        conversation_note_turn_end();
+        if (e == ESP_OK) {
+            printf("<< %s\n", reply);
+            conversation_note_reply(reply);
+            printf("   [文件已经服务端解析后进入上下文]\n");
+            tts_say(reply);
+        } else {
+            printf("!! 文件问答失败\n");
+        }
+        free(reply);
+        return;
+    }
+    if (strncmp(line, "asr /", 5) == 0) {
+        char *txt = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!txt) {
+            txt = malloc(1024);
+        }
+        if (!txt) {
+            printf("!! out of memory\n");
+            return;
+        }
+        printf("* 语音识别（独立 ASR 接口）：%s\n", line + 4);
+        conversation_lock_cloud();
+        esp_err_t e = asr_transcribe_file(line + 4, txt, 1024);
+        conversation_unlock_cloud();
+        if (e == ESP_OK) {
+            printf("<< %s\n", txt);
+        } else {
+            printf("!! 识别失败（文件不存在、超过 8 MiB/120 s 或接口错误）\n");
+        }
+        free(txt);
+        return;
+    }
+    if (strncmp(line, "vol", 3) == 0 && (line[3] == 0 || line[3] == ' ')) {
+        const char *v = line + 3;
+        while (*v == ' ') {
+            v++;
+        }
+        if (!v[0]) {
+            printf("* 当前音量 %d（0-100）  用法: vol <0-100>\n", audio_get_volume());
+        } else {
+            int level = atoi(v);
+            if (level < 0) {
+                level = 0;
+            }
+            if (level > 100) {
+                level = 100;
+            }
+            if (audio_set_volume(level) == ESP_OK) {
+                printf("* 音量 -> %d\n", audio_get_volume());
+            } else {
+                printf("!! 设置音量失败\n");
+            }
+        }
+        return;
+    }
+    if (strcmp(line, "ds") == 0) {
+        const ds_features_t *ft = deepseek_features();
+        printf("* DeepSeek 全家桶状态\n");
+        printf("  模型 %s  思考 %s(%s)  联网搜索 %s  读链接 %s  安全 %s  标题 %s\n",
+               CONFIG_DEEPSEEK_MODEL, ft->thinking ? "开" : "关", deepseek_effort(),
+               ft->web_search ? "开" : "关", ft->read_url ? "开" : "关",
+               ft->safety ? "high" : "关", ft->title ? "开" : "关");
+        printf("  ASR %s  TTS %s(%s)\n", asr_configured() ? "就绪" : "未配置",
+               tts_cloud_configured() ? "云端" : "未配置", tts_cloud_voice());
+        printf("  独立接口: search / fetch / ocr / askfile / asr / 内置 web+read_url\n");
+        print_turn_info();
+        return;
+    }
+
     if (strcmp(line, "who") == 0) {
         char names[SPEAKER_MAX][SPEAKER_NAME_LEN];
         int n = speaker_id_list(names, SPEAKER_MAX);
@@ -1200,7 +1677,13 @@ static void on_console_line(const char *line)
     conversation_unlock_cloud();
     if (text_err == ESP_OK) {
         printf("<< %s\n", reply);
-        storage_append_turn("", 0, 0, identity_face_id(), identity_speaker_id(), line, reply);
+        print_turn_info();
+        {
+            static char meta[768];
+            ds_meta_json(meta, sizeof(meta));
+            storage_append_turn("", 0, 0, identity_face_id(), identity_speaker_id(),
+                                line, reply, meta);
+        }
     } else {
         printf("!! DeepSeek request failed (key set? network up?)\n");
     }
@@ -1353,6 +1836,24 @@ void app_main(void)
             ESP_LOGW(TAG, "rebooting as requested by the user");
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
+        }
+
+        /* Anchor the microphone mute on real playback, not on when the reply
+         * was queued: the cloud voice needs 7-12 s to deliver the first PCM,
+         * and the old fixed window had already expired by then.  When the
+         * speaker goes quiet, keep the mic shut for the ring-out - the tail
+         * used to be transcribed as a fresh utterance and answered. */
+        bool speaking_now = tts_speaking();
+        if (s_tts_was_speaking && !speaking_now) {
+            s_tts_was_speaking = false;
+            s_suppress_until_us = esp_timer_get_time() + (int64_t)1200 * 1000;
+            s_preroll_count = 0;
+            s_preroll_head = 0;
+            s_utt_len = 0;
+            s_utt_raw_len = 0;
+            ESP_LOGI(TAG, "tts playback finished; muting mic for 1200 ms");
+        } else if (!s_tts_was_speaking && speaking_now) {
+            s_tts_was_speaking = true;
         }
 
 #if CONFIG_VOICE_AEC
