@@ -84,6 +84,17 @@ is required any more.
   picolibc spec-file escaping; `tools/build_voice_logger.sh` now detects that
   and keeps the build tree on an ASCII path.
 
+### Notes
+
+- Boot volume is **75** (0-100, "vol <n>" at runtime). 90 clipped; 50 was too
+  quiet in the room this board lives in.
+- Spoken answers are capped at the first two sentences (~110 bytes) so one
+  answer cannot hold the speaker for 20-30 s while the microphone is gated.
+  The full text stays in the console output and the TF-card record.
+- The DigiCert Global Root G2 is now pinned alongside the DeepSeek leaf, to
+  work around the chain builder dropping the root link under PSA memory
+  pressure (root cause of the WebSocket TTS handshake failure).
+
 ### Known issues
 
 - The WebSocket TTS handshake fails TLS certificate verification inside the

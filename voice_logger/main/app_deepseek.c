@@ -115,6 +115,33 @@ static bool ds_leaf_pinned(const mbedtls_x509_crt *crt)
     return memcmp(digest, DS_LEAF_SHA256, sizeof(digest)) == 0;
 }
 
+/* The chain builder also intermittently drops the ROOT link: mbedtls reports
+ * DigiCert Global Root G2 at depth 2 as NOT_TRUSTED after its own signature
+ * check failed under PSA memory pressure, the bundle callback then cannot match
+ * it, and the handshake dies with -0x3000.  The HTTP paths retry and usually win
+ * the next handshake; the WebSocket transport gives up after one attempt, so
+ * pin the exact root by subject CN + serial number. */
+static bool ds_root_pinned(const mbedtls_x509_crt *crt)
+{
+    static const unsigned char serial[] = {
+        0x03, 0x3a, 0xf1, 0xe6, 0xa7, 0x11, 0xa9, 0xa0,
+        0xbb, 0x28, 0x64, 0xb1, 0x1d, 0x09, 0xfa, 0xe5,
+    };
+    static const char cn[] = "DigiCert Global Root G2";
+    if (crt->serial.len != sizeof(serial) ||
+        memcmp(crt->serial.p, serial, sizeof(serial)) != 0) {
+        return false;
+    }
+    const unsigned char *p = crt->subject_raw.p;
+    size_t n = crt->subject_raw.len;
+    for (size_t i = 0; i + sizeof(cn) <= n; i++) {
+        if (memcmp(p + i, cn, sizeof(cn) - 1) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static int ds_verify_cb(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
 {
     uint32_t before = *flags;
@@ -122,6 +149,14 @@ static int ds_verify_cb(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *f
     if (depth == 0 && (before & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 &&
         ds_leaf_pinned(crt)) {
         ESP_LOGW(TAG, "chain builder dropped the leaf link; pinned DeepSeek certificate accepted");
+        *flags = before & ~(uint32_t)MBEDTLS_X509_BADCERT_NOT_TRUSTED;
+        if (*flags == 0) {
+            return 0;
+        }
+    }
+    if (depth > 0 && (before & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 &&
+        ds_root_pinned(crt)) {
+        ESP_LOGW(TAG, "chain builder dropped the root link; pinned DigiCert Global Root G2 accepted");
         *flags = before & ~(uint32_t)MBEDTLS_X509_BADCERT_NOT_TRUSTED;
         if (*flags == 0) {
             return 0;
