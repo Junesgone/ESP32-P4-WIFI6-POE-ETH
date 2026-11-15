@@ -471,6 +471,19 @@ typedef struct {
     int n;
 } ds_tools_t;
 
+/* Server rule (HTTP 400 otherwise): device function tools may only be combined
+ * with the built-in web tools / safety check / title **in thinking mode**.
+ * With thinking disabled the two groups have to be split; the server-side
+ * features matter more for an assistant, so the device tools are dropped and
+ * the console says so.  "think on" brings them back. */
+static bool device_tools_allowed(void)
+{
+    if (s_feat.thinking) {
+        return true;
+    }
+    return !(s_feat.web_search || s_feat.read_url || s_feat.safety || s_feat.title);
+}
+
 /* Built-in server-side tools first, then the device function tools.  The
  * client-side "web_search" function is dropped while the built-in tool is on:
  * the service then runs the search itself (and with thinking enabled it is
@@ -491,7 +504,7 @@ static void add_tools(cJSON *root, bool include_device_tools)
         cJSON_AddStringToObject(t, "type", "deepseek_read_url");
         cJSON_AddItemToArray(tools, t);
     }
-    if (include_device_tools) {
+    if (include_device_tools && device_tools_allowed()) {
         cJSON *fn = tools_spec();
         if (fn) {
             const cJSON *it = NULL;

@@ -103,7 +103,7 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 
 ---
 
-## 3. Features and current state (v0.0.9)
+## 3. Features and current state (v0.0.10)
 
 | Area | State |
 |---|---|
@@ -267,6 +267,13 @@ declare:
 | `{"role":"latest_reminder",...}` message | 用户元数据标记: `2026-11-14,星期六,中山,App,中文` (date, weekday, city, platform, language) directly before the user message. |
 | `tools: [{"type":"function",...}]` | The device function tools (volume, reminders, Wi-Fi, voiceprint, …) coexist with the built-in web tools. |
 
+**Thinking mode is required for the device tools.** The API rejects a request
+that mixes client (function) tools with the built-in web tools / `safety_check` /
+`title` while thinking is disabled ("client tools can only be used together with
+... in thinking mode"). The firmware therefore keeps the server-side features and
+drops the device function tools when thinking is off, and the console `think off`
+command says so; `think on` brings the device tools back.
+
 Stream handling (see `app_deepseek.c`): `delta.reasoning_content` is the thinking,
 `delta.content` the answer; `choices[0].server_tool_event` reports live search /
 page-reading progress (`call_started` / `call_completed`); the **last chunk** carries
@@ -403,7 +410,7 @@ touching the sources.
 
 ## 8. Version and releases
 
-Current version: **v0.0.9** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.10** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 

@@ -1446,7 +1446,16 @@ static void on_console_line(const char *line)
             printf("* 深度思考已开启（配合内置联网搜索即为深度思考搜索）\n");
         } else if (strcmp(line + 6, "off") == 0) {
             deepseek_set_thinking(false);
-            printf("* 深度思考已关闭（联网搜索变成普通搜索）\n");
+            const ds_features_t *ft2 = deepseek_features();
+            if (ft2->web_search || ft2->read_url || ft2->safety || ft2->title) {
+                printf("* 深度思考已关闭（联网搜索变成普通搜索）\n");
+                printf("* 注意：服务端要求「客户端工具」只能与内置联网/读链接/安全/标题"
+                       "在思考模式下同时使用，\n"
+                       "  所以非思考模式下设备工具（音量/提醒/蓝牙等）暂时不可用；"
+                       "用 \"think on\" 恢复。\n");
+            } else {
+                printf("* 深度思考已关闭（设备工具仍可用：内置联网/读链接/安全/标题都已关闭）\n");
+            }
         }
         return;
     }

@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.0.10 — 2026-11-15
+
+Build-a-Chatbot audit fix: the non-thinking path was rejected by the API.
+
+### Fixed
+
+- **`think off` made every request fail with HTTP 400.**
+  `tools: client tools can only be used together with deepseek_web_search,
+  deepseek_read_url, safety_check or title in thinking mode` — the API does not
+  allow device function tools to be mixed with the built-in web tools / safety
+  check / title while thinking is disabled. The request builder now drops the
+  device tools in that situation (the server-side capabilities win), logs it
+  once at startup and the console `think off` command says so. Verified on
+  hardware: classic web search with thinking disabled now answers with
+  citations (`service search`, cites=3).
+- The same audit verified the other Build-a-Chatbot features on the device:
+  metadata marker ("今天是几号" -> 2026-11-15 星期日), URL reading
+  (link in the question -> server reads the page and answers), titles,
+  safety refusals, TTS read-aloud, ASR voice input.
+
+### Changed
+
+- Firmware version 0.0.10.
+
 ## v0.0.9 — 2026-11-15
 
 Conversation manners release: 小新 waits until you have actually finished the

@@ -6,8 +6,8 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Firmware version reported in the boot banner ("App version") and used for the
-# GitHub release tag (v0.0.9).
-set(PROJECT_VER "0.0.9")
+# GitHub release tag (v0.0.10).
+set(PROJECT_VER "0.0.10")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(voice_logger)
