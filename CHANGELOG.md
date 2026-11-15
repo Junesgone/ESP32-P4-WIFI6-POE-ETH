@@ -4,6 +4,51 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.0.8 — 2026-11-15
+
+Latency + memory release: a spoken turn no longer pays three TLS handshakes, and
+the board remembers each recognised person across reboots.
+
+### Added
+
+- **TLS session reuse.** `app_ds_http.c` keeps one keep-alive HTTPS connection to
+  api.deepseek.com and serves ASR, TTS, Search, Fetch and non-streaming chat from
+  it; the chat SSE connection (the edge closes it) resumes from a TLS session
+  ticket instead of redoing the certificate exchange. Measured: first Search
+  4.7 s -> 0.4-0.5 s afterwards; chat first answer token 3.2-4.6 s -> 0.5-1.4 s;
+  TTS connect 3.1-3.9 s -> 35-50 ms. A spoken turn drops from ~20 s to a few
+  seconds before the first word. Console `dshttp` shows requests / handshakes /
+  reuses.
+- **Per-person conversation memory** (`app_memory.c`). Each turn is stored per
+  speaker label on the TF card (`/sdcard/conv/people/<speaker>.txt`, tab
+  separated), the last 4 turns are injected as background when that person talks
+  again (across reboots), the model has a `recall_memory` tool, and the console
+  gained `memory`, `memory show <name>`, `memory search <text>`,
+  `memory clear [name]`. Files rotate past 48 KB. Verified on hardware: after a
+  reboot the same voiceprint loaded "2 of 2 remembered turns" and answered
+  "你刚让我用一句话介绍自己，还问了上海今天的天气".
+- `CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y` in the board defaults.
+
+### Fixed
+
+- SD card writes failed with `sdmmc_cmd: allocate_dma_buf: not enough mem` while
+  the persistent TLS client owned a large part of the internal heap: the TF card
+  now reserves a DMA buffer **after** the ESP-Hosted SDIO link is initialised.
+  (Reserving it earlier broke the SDIO card init and took Wi-Fi down completely.)
+- System prompt buffer moved to PSRAM and the shared-connection RX buffer reduced
+  to 2 KB, so a turn leaves ~19 KB of internal heap free instead of the old
+  ~50 KB; the firmware logs a `LOW internal RAM` warning below 16 KB.
+- The chat SSE reader no longer depends on the server closing the stream after
+  `[DONE]` (it does not close it); it stops at `[DONE]` and closes the socket.
+
+### Notes
+
+- The WebSocket TTS path stays experimental/off by default (unchanged from
+  0.0.7); the streaming POST now reuses the connection, which is the best of both.
+- Per-speaker memory makes voiceprint labels meaningful: enrol with
+  `enroll <name>` and that person's conversations are remembered under their
+  name; unenrolled regular voices accumulate under 人N.
+
 ## v0.0.7 — 2026-11-15
 
 Live microphone fixes: the voice path had stopped answering spoken input, and

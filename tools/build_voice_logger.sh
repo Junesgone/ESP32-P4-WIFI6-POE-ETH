@@ -1,6 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Junesgone
-
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # Build (and optionally flash) the 小新 voice_logger firmware.

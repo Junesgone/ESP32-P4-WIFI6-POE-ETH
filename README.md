@@ -99,7 +99,7 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 
 ---
 
-## 3. Features and current state (v0.0.6)
+## 3. Features and current state (v0.0.8)
 
 | Area | State |
 |---|---|
@@ -110,6 +110,9 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 | File input | Files API upload + server-side parsing (`text_recognition` / `rich_layout_recognition`), then referenced as a `{"type":"file","file_id":...}` content part; OCR available standalone |
 | Model safety | `safety_check: {"level":"high"}`; refusals (`finish_reason: content_filter` / 400 "Content Exists Risk") become a short spoken refusal |
 | Conversation UX | Conversation title (`title.enabled`), user-metadata marker (`latest_reminder`: date, weekday, city, platform, language) |
+| Person recognition | On-board voiceprint decides who is talking (enrolled name or 人N cluster label) and the chat prompt names them |
+| Per-person memory | Every turn is remembered per speaker on the TF card and reloaded when that person talks again after a reboot; the model can search it with the `recall_memory` tool |
+| Cloud transport | One keep-alive HTTPS connection shared by ASR / chat / TTS / Search / Fetch, with TLS session-ticket resumption (a spoken turn pays ~1 s of handshake instead of ~10.5 s) |
 | Speech synthesis | DeepSeek TTS over **WebSocket streaming synthesis** (`wss://api.deepseek.com/v1/tools/tts`, 24 kHz PCM resampled to 16 kHz) with a streaming HTTP POST fallback and ESP-SR offline fallback |
 | Voiceprint | On-device 43-dim MFCC+pitch embedding, raw-mic input, LDA-weighted, 3-utterance averaged enrolment, anonymous role clustering with pending/merge/split logic |
 | Conversation modes | assistant / hybrid / monitor, switchable at runtime |
@@ -300,21 +303,60 @@ a multi-second stall per reply. With the POST: connect 3.1-3.9 s, first audio
 the WebSocket is enabled the firmware tries it first, then falls back to POST and
 backs off for 5 minutes after two consecutive failures.
 
-### 6.4 Measured voice-turn latency (firmware 0.0.7)
+### 6.4 Measured voice-turn latency (firmware 0.0.8)
 
-| Stage | Time | Note |
-|---|---|---|
-| ASR (`/v1/tools/asr`) | 4.2 s | ~3.5 s of that is the TLS handshake |
-| Chat first answer token | 3.2-4.6 s | thinking enabled |
-| TTS connect + first audio | 3.1 s + 1.2-2 s | streaming POST, `format:"pcm"` |
-| Spoken reply playback | 1-8 s | streamed from the PSRAM jitter buffer, 0 starvation |
+| Stage | Before (0.0.7) | Now (0.0.8) | Note |
+|---|---|---|---|
+| ASR | 4.2 s | 0.5-1.0 s | shared connection, usually already open |
+| Chat first answer token | 3.2-4.6 s | 0.5-1.4 s | TLS session-ticket resume |
+| TTS connect | 3.1-3.9 s | 35-50 ms | connection reused from ASR/chat |
+| TTS first audio | +1.2-2 s | +1.0-2.0 s | streaming POST, `format:"pcm"` |
+| Spoken reply playback | 1-8 s | 1-8 s | PSRAM jitter buffer, 0 starvation |
 
-Every cloud call uses its own TLS session (: one mbedTLS session at a time on this
-board), so three handshakes per turn dominate the delay. Standalone Search API:
-4.2 s per call on the board vs 0.5 s from a PC - again the handshake. Keeping a
-TLS session alive between the ASR / chat / TTS calls is the next latency lever.
+A spoken question now starts being answered a few seconds after it ends instead of
+~20 s. Standalone Search API: 4.7 s for the first call (new TLS connection), then
+0.4-0.5 s per call on the reused connection.
 
-### 6.5 Spoken-answer length and volume
+### 6.5 TLS session reuse
+
+`app_ds_http.c` keeps **one** `esp_http_client` handle for api.deepseek.com and
+serves ASR, TTS, Search, Fetch and the non-streaming chat calls from it. The
+DeepSeek edge answers every endpoint with `Connection: keep-alive`, so after the
+first handshake the next request goes out on the same TCP+TLS session
+(`dshttp` on the console shows requests / handshakes / reuses). The chat SSE
+endpoint is the exception - the edge answers it with `Connection: close` and
+leaves the chunked body open after `[DONE]` - so the firmware stops reading at
+`[DONE]`, closes the socket but keeps the client, and the next handshake resumes
+from the TLS session ticket (`CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS`) instead of
+redoing the ~3.5 s certificate exchange. Only one TLS session is open at a time
+by design.
+
+The persistent client costs ~14 KB of internal RAM, and the SD card needs a
+DMA-capable buffer at the same time; both are handled explicitly (the TF card
+reserves its DMA buffer after the ESP-Hosted SDIO link is up, and the firmware
+logs a `LOW internal RAM` warning when a turn leaves less than ~16 KB free).
+
+### 6.6 Per-person conversation memory
+
+Speaker identification labels every utterance (enrolled name, or 人1/人2… for
+unknown-but-consistent voices).  `app_memory.c` stores each completed turn in
+
+    /sdcard/conv/people/<speaker>.txt      (tab separated: timestamp, user, reply)
+
+- When the speaker changes, the in-RAM chat history is cleared and the **last 4
+  remembered turns of that person are injected into the system prompt** as
+  background, so a recognised person is not a stranger after a reboot.
+- The model also gets a `recall_memory` tool: "你还记得我之前说过什么吗" makes it
+  search its notes about the current speaker (local substring search, no network).
+- Console: `memory` (list speakers + turn counts), `memory show <name>`,
+  `memory search <text>`, `memory clear [name]`.
+- Files rotate automatically past 48 KB (newest 120 turns are kept). Everything
+  stays on the TF card; nothing is uploaded.
+
+Verified on hardware: after a reboot the same voiceprint loaded "2 of 2
+remembered turns" and answered *"你刚让我用一句话介绍自己，还问了上海今天的天气"*.
+
+### 6.7 Spoken-answer length and volume
 
 A deep-thinking search turn answers with 300-400 characters -- formatted like the
 Chat App would render it. Reading all of that kept the speaker busy for 20-30 s
@@ -325,7 +367,7 @@ full text still goes to the console and the TF-card JSONL record. The boot volum
 is 50 (0-100) because 90 fed the on-board microphone through the on-board
 speaker and made the VAD hear the assistant itself.
 
-### 6.6 Configuration
+### 6.8 Configuration
 
 All switches live in `menuconfig → Voice logger configuration → DeepSeek` and
 `→ Cloud neural TTS`, and can be flipped at runtime from the serial console
@@ -357,7 +399,7 @@ touching the sources.
 
 ## 8. Version and releases
 
-Current version: **v0.0.7** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.8** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 

@@ -2,6 +2,8 @@
 # Copyright 2026 Junesgone
 
 idf_component_register(SRCS "main.c"
+                       "app_ds_http.c"
+                       "app_memory.c"
                        "app_board.c"
                        "app_audio.c"
                        "app_vad.c"

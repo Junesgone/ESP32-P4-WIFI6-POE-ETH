@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "app_deepseek.h"
+#include "app_ds_http.h"
 #include "app_wifi.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -341,54 +342,21 @@ static void pipe_finish(pcm_pipe_t *p)
 
 /* ---------------------- streaming POST (fallback) ----------------------- */
 
-typedef struct {
-    pcm_pipe_t *pipe;
-    bool got_status;
-    int status;
-    char err[192];
-    size_t errlen;
-} http_stream_ctx_t;
-
-static esp_err_t http_stream_event(esp_http_client_event_t *evt)
+/* Response consumer for the shared keep-alive connection: raw 24 kHz s16le
+ * PCM chunks go straight into the resampling pipe. */
+static esp_err_t tts_post_sink(const char *data, size_t len, void *ctx)
 {
-    http_stream_ctx_t *hc = (http_stream_ctx_t *)evt->user_data;
-    if (!hc) {
-        return ESP_OK;
-    }
-    switch (evt->event_id) {
-    case HTTP_EVENT_ON_CONNECTED:
-        if (hc->pipe) {
-            hc->pipe->t_connected = esp_timer_get_time();
-        }
-        break;
-    case HTTP_EVENT_ON_DATA:
-        if (!hc->got_status) {
-            hc->got_status = true;
-            hc->status = esp_http_client_get_status_code(evt->client);
-        }
-        if (hc->status != 200) {
-            size_t n = (size_t)evt->data_len;
-            if (evt->data && n && hc->errlen + n < sizeof(hc->err)) {
-                memcpy(hc->err + hc->errlen, evt->data, n);
-                hc->errlen += n;
-                hc->err[hc->errlen] = 0;
-            }
-            break;
-        }
-        if (evt->data && evt->data_len > 0) {
-            pipe_feed(hc->pipe, (const uint8_t *)evt->data, (size_t)evt->data_len);
-        }
-        break;
-    default:
-        break;
+    pcm_pipe_t *p = (pcm_pipe_t *)ctx;
+    if (p && data && len) {
+        pipe_feed(p, (const uint8_t *)data, len);
     }
     return ESP_OK;
 }
 
 /* POST /v1/tools/tts with {"text","voice_id","format":"pcm"}.  The response is
- * chunked raw 24 kHz s16le and ends when the connection closes; esp_http_client
- * de-chunks and hands each block to the event handler, so playback still starts
- * while the rest is synthesized. */
+ * chunked raw 24 kHz s16le and ends when the server finishes the chunked body;
+ * the shared connection hands each block to the sink, so playback starts while
+ * the rest is still being synthesized. */
 static esp_err_t http_stream(pcm_pipe_t *p, const char *utf8_text)
 {
     cJSON *root = cJSON_CreateObject();
@@ -403,55 +371,36 @@ static esp_err_t http_stream(pcm_pipe_t *p, const char *utf8_text)
     if (!body) {
         return ESP_ERR_NO_MEM;
     }
-
-    char auth[192];
-    snprintf(auth, sizeof(auth), "Authorization: Bearer %s", api_key());
-
-    http_stream_ctx_t hc = { .pipe = p, .status = 0 };
-    esp_http_client_config_t cfg = {
-        .url = CONFIG_DEEPSEEK_TTS_URL,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = HTTP_RX_BUFFER,
-        .crt_bundle_attach = deepseek_tls_attach,
-        .event_handler = http_stream_event,
-        .user_data = &hc,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        free(body);
-        ESP_LOGE(TAG, "http client init failed");
-        return ESP_ERR_NO_MEM;
+    if (api_key()[0] && strcmp(api_key(), CONFIG_DEEPSEEK_API_KEY) != 0) {
+        ds_http_set_auth(api_key());
     }
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    /* esp_http_client wants the header VALUE here; the WebSocket config above
-     * wants the complete "Name: Value\r\n" line.  Sending the full line as the
-     * value produced "Authorization: Authorization: Bearer ..." and the API
-     * answered 401. */
-    esp_http_client_set_header(client, "Authorization", auth + sizeof("Authorization: ")-1);
-    esp_http_client_set_post_field(client, body, (int)strlen(body));
 
+    int64_t connect_before = ds_http_last_connect_us();
+    int status = 0;
     int64_t t0 = esp_timer_get_time();
-    esp_err_t err = esp_http_client_perform(client);
-    if (!hc.got_status) {
-        hc.status = esp_http_client_get_status_code(client);
-    }
-    if (hc.status != 200) {
-        ESP_LOGE(TAG, "TTS POST HTTP %d: %.160s", hc.status,
-                 hc.errlen ? hc.err : "(no body)");
-        err = ESP_FAIL;
-    } else if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TTS POST transport failed after %lld ms: %s",
-                 (long long)((esp_timer_get_time() - t0) / 1000), esp_err_to_name(err));
-    } else if (p->out_samples == 0) {
-        ESP_LOGE(TAG, "TTS POST returned no PCM");
-        err = ESP_FAIL;
-    } else {
-        err = ESP_OK;
-    }
-    esp_http_client_cleanup(client);
+    esp_err_t err = ds_http_request(CONFIG_DEEPSEEK_TTS_URL, "POST", "application/json",
+                                    "audio/pcm", body, strlen(body), HTTP_TIMEOUT_MS,
+                                    tts_post_sink, p, &status);
     free(body);
-    return err;
+    if (ds_http_last_connect_us() != connect_before) {
+        p->t_connected = ds_http_last_connect_us();
+    } else {
+        p->t_connected = t0;      /* connection reused: no handshake on this call */
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "TTS POST transport failed after %lld ms",
+                 (long long)((esp_timer_get_time() - t0) / 1000));
+        return ESP_FAIL;
+    }
+    if (status != 200) {
+        ESP_LOGE(TAG, "TTS POST HTTP %d: %.160s", status, ds_http_last_error());
+        return ESP_FAIL;
+    }
+    if (p->out_samples == 0) {
+        ESP_LOGE(TAG, "TTS POST returned no PCM");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 /* ------------------------------ batch path ------------------------------ */

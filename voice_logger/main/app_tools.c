@@ -13,6 +13,7 @@
 #include "app_audio.h"
 #include "app_ble.h"
 #include "app_deepseek.h"
+#include "app_memory.h"
 #include "app_reminder.h"
 #include "app_speaker_id.h"
 #include "app_storage.h"
@@ -93,6 +94,12 @@ cJSON *tools_spec(void)
              "最近发生的事，或你不知道但网上查得到答案的问题，都必须调用它，"
              "不要凭记忆编造时效性内容。",
              P_OBJ("\"query\":{\"type\":\"string\",\"description\":\"搜索关键词，支持 site: lang: after: 等操作符\"}",
+                   "\"query\""));
+
+    add_tool(arr, "recall_memory",
+             "回忆对方以前说过的话。用户问\"你还记得吗\"\"上次我说过什么\""
+             "\"我们之前聊过什么\"时，先调用它在本机记忆里搜索；搜不到再考虑联网。",
+             P_OBJ("\"query\":{\"type\":\"string\",\"description\":\"要在记忆里找的关键词或话题\"}",
                    "\"query\""));
 
     add_tool(arr, "read_url",
@@ -221,6 +228,22 @@ bool tools_execute(const char *name, const cJSON *args, char *result, size_t res
             return true;
         }
         deepseek_search(q, SEARCH_MAX_RESULTS, false, result, result_len);
+        return true;
+    }
+    if (strcmp(name, "recall_memory") == 0) {
+        const char *q = arg_str(args, "query");
+        static char mem_buf[1200];
+        int hits;
+        if (!q || !q[0]) {
+            hits = 0;
+        } else {
+            hits = memory_search(memory_current_speaker(), q, mem_buf, sizeof(mem_buf));
+        }
+        if (hits > 0) {
+            snprintf(result, result_len, "在记忆里找到 %d 条相关对话：\n%s", hits, mem_buf);
+        } else {
+            snprintf(result, result_len, "本机记忆里没有找到关于\"%s\"的对话记录。", q ? q : "");
+        }
         return true;
     }
     if (strcmp(name, "read_url") == 0) {

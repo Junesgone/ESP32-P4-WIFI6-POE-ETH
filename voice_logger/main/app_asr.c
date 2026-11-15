@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "app_deepseek.h"
+#include "app_ds_http.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -85,71 +86,45 @@ static char *build_preamble(char *buf, size_t len)
     return buf;
 }
 
-/* POSTs pre + wav bytes + tail and parses {"text": ...}. */
+/* Sends pre + wav bytes + tail as one multipart body over the shared
+ * keep-alive connection and parses {"text": ...}. */
 static esp_err_t asr_post(const char *pre, size_t pre_len, const uint8_t *wav, size_t wav_len,
                           char *out_text, size_t out_len)
 {
     const char *tail = "\r\n--" BOUNDARY "--\r\n";
-    int n_tail = (int)strlen(tail);
-    int content_len = (int)pre_len + (int)wav_len + n_tail;
+    size_t tail_len = strlen(tail);
+    size_t total = pre_len + wav_len + tail_len;
 
-    char auth[192];
-    snprintf(auth, sizeof(auth), "Bearer %s", api_key());
+    uint8_t *body = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) {
+        body = malloc(total);
+    }
+    if (!body) {
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(body, pre, pre_len);
+    memcpy(body + pre_len, wav, wav_len);
+    memcpy(body + pre_len + wav_len, tail, tail_len);
+
     char ctype[64];
     snprintf(ctype, sizeof(ctype), "multipart/form-data; boundary=" BOUNDARY);
-
-    esp_http_client_config_t cfg = {
-        .url = CONFIG_ASR_BASE_URL,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = ASR_TIMEOUT_MS,
-        .buffer_size = 4096,
-        /* Same pinned verifier as the chat path: the plain bundle
-         * intermittently rejects api.deepseek.com's TrustAsia chain. */
-        .crt_bundle_attach = deepseek_tls_attach,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) {
-        return ESP_ERR_NO_MEM;
+    if (api_key()[0] && strcmp(api_key(), CONFIG_DEEPSEEK_API_KEY) != 0) {
+        ds_http_set_auth(api_key());       /* dedicated ASR vendor configured */
     }
-    esp_http_client_set_header(c, "Content-Type", ctype);
-    esp_http_client_set_header(c, "Authorization", auth);
 
-    esp_err_t err = esp_http_client_open(c, content_len);
+    char *resp = NULL;
+    int status = 0;
+    esp_err_t err = ds_http_request_collect(CONFIG_ASR_BASE_URL, "POST", ctype, NULL,
+                                            (const char *)body, total, ASR_TIMEOUT_MS,
+                                            &resp, &status);
+    free(body);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "connect failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(c);
-        return err;
+        ESP_LOGE(TAG, "ASR transport failed: %s", esp_err_to_name(err));
+        free(resp);
+        return ESP_FAIL;
     }
-    esp_http_client_write(c, pre, (int)pre_len);
-    esp_http_client_write(c, (const char *)wav, (int)wav_len);
-    esp_http_client_write(c, tail, n_tail);
-
-    esp_http_client_fetch_headers(c);
-    int status = esp_http_client_get_status_code(c);
-    size_t cap = 4096;
-    char *resp = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!resp) {
-        resp = malloc(cap);
-    }
-    if (!resp) {
-        esp_http_client_close(c);
-        esp_http_client_cleanup(c);
-        return ESP_ERR_NO_MEM;
-    }
-    size_t used = 0;
-    while (used + 1 < cap) {
-        int n = esp_http_client_read(c, resp + used, (int)(cap - 1 - used));
-        if (n <= 0) {
-            break;
-        }
-        used += (size_t)n;
-    }
-    resp[used] = 0;
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-
-    if (status != 200) {
-        ESP_LOGE(TAG, "HTTP %d: %.200s", status, resp);
+    if (status != 200 || !resp) {
+        ESP_LOGE(TAG, "HTTP %d: %.200s", status, resp ? resp : ds_http_last_error());
         free(resp);
         return ESP_FAIL;
     }
@@ -168,7 +143,7 @@ static esp_err_t asr_post(const char *pre, size_t pre_len, const uint8_t *wav, s
             ESP_LOGI(TAG, "transcribed %d ms: %.120s", dur->valueint, out_text);
         }
     } else {
-        ESP_LOGE(TAG, "no \"text\" in ASR reply");
+        ESP_LOGE(TAG, "no text field in ASR reply");
     }
     cJSON_Delete(root);
     return ret;

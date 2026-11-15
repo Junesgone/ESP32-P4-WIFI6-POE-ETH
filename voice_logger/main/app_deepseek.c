@@ -5,6 +5,8 @@
 
 #include "app_deepseek.h"
 #include "app_conversation.h"
+#include "app_memory.h"
+#include "app_ds_http.h"
 #include "app_identity.h"
 #include "app_persona.h"
 #include "app_storage.h"
@@ -311,6 +313,43 @@ typedef struct {
     char *stc;      /* owned server_tool_calls JSON, only on the newest turn */
 } msg_t;
 
+/* Per-person memory: whose turn this is, and their remembered turns loaded
+ * from the TF card when the speaker changes. */
+static char s_speaker[40];
+static char *s_memory_text;          /* PSRAM, lazily allocated */
+
+const char *deepseek_speaker(void)
+{
+    return s_speaker[0] ? s_speaker : IDENTITY_UNKNOWN;
+}
+
+void deepseek_set_speaker(const char *speaker)
+{
+    const char *spk = (speaker && speaker[0]) ? speaker : IDENTITY_UNKNOWN;
+    if (strcmp(spk, deepseek_speaker()) == 0) {
+        return;      /* same person: keep the in-RAM context */
+    }
+    snprintf(s_speaker, sizeof(s_speaker), "%s", spk);
+    /* New person -> fresh rolling history and a fresh conversation title. */
+    deepseek_reset_history();
+    if (!s_memory_text) {
+        s_memory_text = heap_caps_malloc(1600, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_memory_text) {
+            s_memory_text = malloc(1600);
+        }
+    }
+    if (s_memory_text) {
+        s_memory_text[0] = 0;
+        memory_set_current_speaker(spk);
+        if (memory_ready()) {
+            int n = memory_recent(spk, 4, s_memory_text, 1600);
+            if (n > 0) {
+                ESP_LOGI(TAG, "speaker %s: loaded %d remembered turns", spk, n);
+            }
+        }
+    }
+}
+
 static msg_t s_hist[MAX_TURNS * 2];
 static int   s_hist_len;
 static int   s_turns;
@@ -515,7 +554,19 @@ static void add_system_prompt(cJSON *msgs, const char *speaker)
      * without eating the caller's stack; calls are serialised by the cloud
      * lock.  The speaker line is the on-board voiceprint result - someone
      * recognised by the board is named, everyone else stays anonymous. */
-    static char sysbuf[4096];
+    /* 4 KB of persona + speaker + memory text: keep it in PSRAM, the internal
+     * heap is the scarce resource once the persistent TLS client exists. */
+    static char *sysbuf;
+    size_t len = 0;
+    if (!sysbuf) {
+        sysbuf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!sysbuf) {
+            sysbuf = malloc(4096);
+        }
+        if (!sysbuf) {
+            return;
+        }
+    }
     /* 联网搜索/读链接由服务端完成，模型拿到的是整页资料，很容易切成
      * markdown 列表和加粗标题 - 那些符号会被 TTS 念成噪音，长答案也会
      * 让板子说上十几秒。 所以补一句"查到也只用口语说结论"。 */
@@ -524,11 +575,27 @@ static void add_system_prompt(cJSON *msgs, const char *speaker)
         "口语说结论：不要列条目、不要标题、不要加粗、不要编号、不要念链接。"
         "想清楚再答，但只说结论，不复述推理过程。";
     if (speaker && strcmp(speaker, IDENTITY_UNKNOWN) != 0) {
-        snprintf(sysbuf, sizeof(sysbuf), "%s%s\n当前和你说话的人已通过声纹识别为：%s。",
-                 XIAOXIN_SYSTEM_PROMPT, spoken_rules, speaker);
+        len = (size_t)snprintf(sysbuf, 4096,
+                               "%s%s\n当前和你说话的人已通过声纹识别为：%s。",
+                               XIAOXIN_SYSTEM_PROMPT, spoken_rules, speaker);
     } else {
-        snprintf(sysbuf, sizeof(sysbuf), "%s%s\n当前说话人未能通过声纹识别。",
-                 XIAOXIN_SYSTEM_PROMPT, spoken_rules);
+        len = (size_t)snprintf(sysbuf, 4096,
+                               "%s%s\n当前说话人未能通过声纹识别。",
+                               XIAOXIN_SYSTEM_PROMPT, spoken_rules);
+    }
+    /* Per-person memory (TF card, survives reboots).  Kept short: the model
+     * should use it as background, not recite it. */
+    if (s_memory_text && s_memory_text[0] && len + 260 < 4096) {
+        len += (size_t)snprintf(sysbuf + len, 4096 - len,
+                                "\n以下是你和这个人之前聊过的内容（按时间从旧到新，"
+                                "保存在板子的 TF 卡里；只作参考，不要逐条复述，除非对方问起）：\n");
+        size_t room = 4096 - len - 1;
+        size_t n = strlen(s_memory_text);
+        if (n > room) {
+            n = room;
+        }
+        memcpy(sysbuf + len, s_memory_text, n);
+        sysbuf[len + n] = 0;
     }
     cJSON *sys = cJSON_CreateObject();
     if (!sys) {
@@ -625,99 +692,31 @@ static void ds_add_auth(esp_http_client_handle_t c)
     esp_http_client_set_header(c, "Authorization", auth);
 }
 
-/* One HTTPS POST with a JSON body; the whole response body is returned in
- * PSRAM (NUL-terminated).  status_out carries the HTTP status even for
- * non-200 replies, because the caller wants the error body for the log. */
+/* One HTTPS POST over the shared keep-alive connection; the whole response
+ * body is returned in PSRAM (NUL-terminated).  status_out carries the HTTP
+ * status even for non-200 replies, because the caller wants the error body for
+ * the log.  (A single persistent TLS session now serves ASR, chat-non-stream,
+ * TTS, Search, Fetch and the supervisor; the old code paid a ~3.5 s handshake
+ * on every call.) */
 static esp_err_t ds_http_post_raw(const char *url, const char *body, size_t body_len,
                                   int timeout_ms, bool long_lived, char **resp_out,
                                   int *status_out)
 {
-    if (resp_out) {
-        *resp_out = NULL;
-    }
-    if (status_out) {
-        *status_out = 0;
-    }
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = timeout_ms,
-        .buffer_size = 4096,
-        .crt_bundle_attach = deepseek_tls_attach,
-    };
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_http_client_set_header(c, "Content-Type", "application/json");
-    ds_add_auth(c);
-
-    esp_err_t err = esp_http_client_open(c, (int)body_len);
+    (void)long_lived;
+    char *resp = NULL;
+    esp_err_t err = ds_http_request_collect(url, "POST", "application/json", NULL,
+                                            body, body_len, timeout_ms, &resp, status_out);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "connect %s failed: %s", url, esp_err_to_name(err));
-        esp_http_client_cleanup(c);
+        ESP_LOGE(TAG, "request %s failed: %s", url, esp_err_to_name(err));
+        if (resp_out) {
+            *resp_out = NULL;
+        }
         return err;
     }
-    if (body_len) {
-        esp_http_client_write(c, body, (int)body_len);
-    }
-
-    esp_http_client_fetch_headers(c);
-    int status = esp_http_client_get_status_code(c);
-
-    size_t cap = 8192, used = 0;
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) {
-        buf = malloc(cap);
-    }
-    if (!buf) {
-        esp_http_client_close(c);
-        esp_http_client_cleanup(c);
-        return ESP_ERR_NO_MEM;
-    }
-    while (1) {
-        if (used + 1 >= cap) {
-            if (cap >= HTTP_RESP_MAX) {
-                ESP_LOGW(TAG, "response capped at %u bytes", (unsigned)cap);
-                break;
-            }
-            size_t ncap = cap * 2;
-            if (ncap > HTTP_RESP_MAX) {
-                ncap = HTTP_RESP_MAX;
-            }
-            char *nb = heap_caps_realloc(buf, ncap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!nb) {
-                nb = realloc(buf, ncap);
-            }
-            if (!nb) {
-                free(buf);
-                esp_http_client_close(c);
-                esp_http_client_cleanup(c);
-                return ESP_ERR_NO_MEM;
-            }
-            buf = nb;
-            cap = ncap;
-        }
-        int n = esp_http_client_read(c, buf + used, (int)(cap - 1 - used));
-        if (n <= 0) {
-            break;
-        }
-        used += (size_t)n;
-    }
-    buf[used] = 0;
-    esp_http_client_close(c);
-    esp_http_client_cleanup(c);
-    (void)long_lived;
-    if (status != 200) {
-        ESP_LOGW(TAG, "%s -> HTTP %d: %.240s", url, status, buf);
-    }
     if (resp_out) {
-        *resp_out = buf;
+        *resp_out = resp;
     } else {
-        free(buf);
-    }
-    if (status_out) {
-        *status_out = status;
+        free(resp);
     }
     return ESP_OK;
 }
@@ -1048,112 +1047,131 @@ static void stream_parse_chunk(stream_ctx_t *c, const char *payload)
 }
 
 /* POST with stream:true, parse the SSE stream, return a synthetic
- * choices[0].message object so the caller's tool loop is unchanged. */
+ * choices[0].message object so the caller's tool loop is unchanged.
+ *
+ * The SSE endpoint answers "Connection: close" and keeps the chunked body open
+ * after [DONE], so the read stops at [DONE] and the socket is closed - but the
+ * shared client (and its TLS session ticket) survives, which makes the next
+ * turn's handshake a resume instead of a full ~3.5 s certificate exchange. */
+
+typedef struct {
+    stream_ctx_t *c;
+    char *line;
+    size_t line_cap;
+    size_t line_len;
+    bool overflow;
+    bool done;
+} sse_line_ctx_t;
+
+/* Line buffer in PSRAM: the last chunk of a web-search turn carries every
+ * citation plus the complete server_tool_calls (10-20 KB on one line). */
+static char *s_sse_line;
+static size_t s_sse_line_cap;
+
+static bool sse_line_ensure(void)
+{
+    if (s_sse_line) {
+        return true;
+    }
+    s_sse_line_cap = 32 * 1024;
+    s_sse_line = heap_caps_malloc(s_sse_line_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_sse_line) {
+        s_sse_line_cap = 4096;
+        s_sse_line = heap_caps_malloc(s_sse_line_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return s_sse_line != NULL;
+}
+
+static void sse_handle_line(sse_line_ctx_t *s)
+{
+    if (s->overflow) {
+        ESP_LOGW(TAG, "SSE line longer than %u bytes, dropped", (unsigned)s->line_cap);
+        s->line_len = 0;
+        s->overflow = false;
+        return;
+    }
+    s->line[s->line_len] = 0;
+    if (strncmp(s->line, "data:", 5) == 0) {
+        const char *payload = s->line + 5;
+        while (*payload == ' ') {
+            payload++;
+        }
+        if (strncmp(payload, "[DONE]", 6) == 0) {
+            s->done = true;
+        } else {
+            stream_parse_chunk(s->c, payload);
+        }
+    }
+    s->line_len = 0;
+}
+
+static void sse_feed(sse_line_ctx_t *s, const char *data, int n)
+{
+    for (int i = 0; i < n && !s->done; i++) {
+        char ch = data[i];
+        if (ch == '\n') {
+            if (s->line_len && s->line[s->line_len - 1] == '\r') {
+                s->line_len--;
+            }
+            sse_handle_line(s);
+        } else if (s->line_len + 1 < s->line_cap) {
+            s->line[s->line_len++] = ch;
+        } else {
+            s->overflow = true;
+        }
+    }
+}
+
 static cJSON *post_chat_stream(const char *body, stream_ctx_t *c)
 {
-    esp_http_client_config_t cfg = {
-        .url = CHAT_URL,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 2048,
-        .crt_bundle_attach = deepseek_tls_attach,
-    };
-    esp_http_client_handle_t h = esp_http_client_init(&cfg);
-    if (!h) {
+    if (!sse_line_ensure()) {
+        ESP_LOGE(TAG, "no PSRAM for the SSE line buffer");
         return NULL;
     }
-    esp_http_client_set_header(h, "Content-Type", "application/json");
-    esp_http_client_set_header(h, "Accept", "text/event-stream");
-    ds_add_auth(h);
-
-    int blen = (int)strlen(body);
-    if (esp_http_client_open(h, blen) != ESP_OK) {
-        ESP_LOGE(TAG, "stream connect failed");
-        esp_http_client_cleanup(h);
-        return NULL;
-    }
-    esp_http_client_write(h, body, blen);
-    esp_http_client_fetch_headers(h);
-    int status = esp_http_client_get_status_code(h);
+    int status = 0;
+    esp_err_t err = ds_http_stream_open(CHAT_URL, "application/json", "text/event-stream",
+                                        body, strlen(body), HTTP_TIMEOUT_MS, &status);
     c->status = status;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "stream connect failed");
+        return NULL;
+    }
     if (status != 200) {
-        char err[320] = { 0 };
-        int n = esp_http_client_read(h, err, sizeof(err) - 1);
+        char errbuf[320] = { 0 };
+        int n = ds_http_stream_read(errbuf, sizeof(errbuf) - 1);
         if (n > 0) {
-            err[n] = 0;
+            errbuf[n] = 0;
+        } else {
+            errbuf[0] = 0;
         }
-        ESP_LOGE(TAG, "stream HTTP %d: %.280s", status, err);
-        if (status == 400 && strstr(err, "Content Exists Risk") != NULL) {
+        ESP_LOGE(TAG, "stream HTTP %d: %.280s", status, errbuf);
+        if (status == 400 && strstr(errbuf, "Content Exists Risk") != NULL) {
             c->http_refused = true;
         }
-        esp_http_client_close(h);
-        esp_http_client_cleanup(h);
+        ds_http_stream_close();
         return NULL;
     }
 
     static char chunk[1024];
-    /* The last chunk of a web-search turn carries every citation plus the
-     * complete server_tool_calls (per-step thinking, sources, encrypted page
-     * signature): 10-20 KB of JSON on one "data:" line.  A 1 KB line buffer
-     * silently dropped it, which is why citations / titles never showed up.
-     * The buffer lives in PSRAM and is reused; calls are serialised by the
-     * cloud lock. */
-    static char *line;
-    static size_t line_cap;
-    if (!line) {
-        line_cap = 32 * 1024;
-        line = heap_caps_malloc(line_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!line) {
-            line_cap = 4096;
-            line = heap_caps_malloc(line_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        }
-        if (!line) {
-            ESP_LOGE(TAG, "no PSRAM for the SSE line buffer");
-            esp_http_client_close(h);
-            esp_http_client_cleanup(h);
-            return NULL;
-        }
-    }
-    size_t line_len = 0;
-    bool line_overflow = false;
-    bool done = false;
-    while (!done) {
-        int n = esp_http_client_read(h, chunk, sizeof(chunk));
+    sse_line_ctx_t s = {
+        .c = c,
+        .line = s_sse_line,
+        .line_cap = s_sse_line_cap,
+    };
+    bool io_error = false;
+    while (!s.done) {
+        int n = ds_http_stream_read(chunk, sizeof(chunk));
         if (n <= 0) {
+            io_error = (n < 0);
             break;
         }
-        for (int i = 0; i < n && !done; i++) {
-            char ch = chunk[i];
-            if (ch == '\n') {
-                if (line_len && line[line_len - 1] == '\r') {
-                    line_len--;
-                }
-                if (line_overflow) {
-                    ESP_LOGW(TAG, "SSE line longer than %u bytes, dropped", (unsigned)line_cap);
-                }
-                line[line_len] = 0;
-                if (!line_overflow && strncmp(line, "data:", 5) == 0) {
-                    const char *payload = line + 5;
-                    while (*payload == ' ') {
-                        payload++;
-                    }
-                    if (strncmp(payload, "[DONE]", 6) == 0) {
-                        done = true;
-                    } else {
-                        stream_parse_chunk(c, payload);
-                    }
-                }
-                line_len = 0;
-                line_overflow = false;
-            } else if (line_len + 1 < line_cap) {
-                line[line_len++] = ch;
-            } else {
-                line_overflow = true;
-            }
-        }
+        sse_feed(&s, chunk, n);
     }
-    esp_http_client_close(h);
-    esp_http_client_cleanup(h);
+    ds_http_stream_close();
+    if (io_error) {
+        ESP_LOGW(TAG, "SSE read error; dropping the shared connection");
+        ds_http_reset();
+    }
     stream_flush(c);   /* speak a trailing sentence without punctuation */
 
     cJSON *msg = cJSON_CreateObject();
@@ -1434,6 +1452,9 @@ static esp_err_t deepseek_ask_impl(const char *user_text, char *reply_out, size_
                 stc_owned = NULL;
                 s_turns++;
                 ret = ESP_OK;
+                if (memory_ready()) {
+                    memory_append(deepseek_speaker(), user_text, reply_out);
+                }
             }
         }
         free(stc_owned);

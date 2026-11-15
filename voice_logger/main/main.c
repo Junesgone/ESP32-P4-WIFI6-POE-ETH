@@ -40,8 +40,10 @@
 #include "app_console.h"
 #include "app_conversation.h"
 #include "app_deepseek.h"
+#include "app_ds_http.h"
 #include "app_reminder.h"
 #include "app_identity.h"
+#include "app_memory.h"
 #include "app_speaker_id.h"
 #include "app_storage.h"
 #include "app_tools.h"
@@ -272,6 +274,9 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
      * a multi-person conversation is still attributable. */
     const char *spk = speaker_id_identify_or_cluster(vp_pcm, vp_len);
     identity_set_last_speaker(spk);
+    /* Switch the conversation context to this person: their remembered turns
+     * are preloaded and the rolling history is reset when it changes. */
+    deepseek_set_speaker(spk);
 
     /* ASR is the one stage the P4 cannot host, so the clip goes out over the
      * on-board C6 Wi-Fi and comes back as text.  The transcript then feeds
@@ -1055,6 +1060,10 @@ static void on_console_line(const char *line)
         /* Same serialisation the utterance worker uses: a console question must
          * never open a second mbedTLS session while ASR/another turn is up. */
         conversation_note_turn_start();
+        {
+            const char *sp = identity_speaker_id();
+            deepseek_set_speaker((sp && strcmp(sp, IDENTITY_UNKNOWN) != 0) ? sp : "主人");
+        }
         conversation_lock_cloud();
         esp_err_t ask_err = deepseek_ask_stream(line + 4, reply, 4096, &spoken);
         conversation_unlock_cloud();
@@ -1582,6 +1591,53 @@ static void on_console_line(const char *line)
         }
         return;
     }
+    if (strncmp(line, "memory", 6) == 0 && (line[6] == 0 || line[6] == ' ')) {
+        const char *arg = line + 6;
+        while (*arg == ' ') {
+            arg++;
+        }
+        if (arg[0] == 0) {
+            static char buf[900];
+            int n = memory_list(buf, sizeof(buf));
+            printf("* 已记住 %d 个人的对话（TF 卡 %s/）：\n%s", n, MEMORY_DIR, buf);
+        } else if (strncmp(arg, "show ", 5) == 0) {
+            static char buf[2000];
+            int n = memory_recent(arg + 5, 10, buf, sizeof(buf));
+            printf("* %s 最近的记忆（%d 条）：\n%s", arg + 5, n, buf[0] ? buf : "（空）\n");
+        } else if (strncmp(arg, "search ", 7) == 0) {
+            static char buf[2000];
+            const char *who = memory_current_speaker();
+            int n = memory_search(who, arg + 7, buf, sizeof(buf));
+            printf("* 在 %s 的记忆里搜 \"%s\"：%d 条\n%s", who, arg + 7, n,
+                   buf[0] ? buf : "（没有匹配）\n");
+        } else if (strncmp(arg, "clear", 5) == 0) {
+            const char *who = arg + 5;
+            while (*who == ' ') {
+                who++;
+            }
+            if (memory_clear(who[0] ? who : NULL) == ESP_OK) {
+                printf("* 记忆已清除：%s\n", who[0] ? who : "所有人");
+            } else {
+                printf("!! 清除失败（TF 卡？）\n");
+            }
+        } else {
+            printf("* 用法: memory | memory show <名字> | memory search <文字> | "
+                   "memory clear [名字]\n");
+        }
+        return;
+    }
+    if (strcmp(line, "dshttp") == 0) {
+        int reqs = 0, conns = 0;
+        ds_http_stats(&reqs, &conns);
+        printf("* HTTPS 共享连接：%d 个请求，%d 次新连接（复用 %d 次）\n",
+               reqs, conns, reqs > conns ? reqs - conns : 0);
+        return;
+    }
+    if (strcmp(line, "dshttp reset") == 0) {
+        ds_http_reset();
+        printf("* HTTPS 共享连接已断开，下次请求重新握手\n");
+        return;
+    }
     if (strcmp(line, "ds") == 0) {
         const ds_features_t *ft = deepseek_features();
         printf("* DeepSeek 全家桶状态\n");
@@ -1592,6 +1648,12 @@ static void on_console_line(const char *line)
         printf("  ASR %s  TTS %s(%s)\n", asr_configured() ? "就绪" : "未配置",
                tts_cloud_configured() ? "云端" : "未配置", tts_cloud_voice());
         printf("  独立接口: search / fetch / ocr / askfile / asr / 内置 web+read_url\n");
+        {
+            int reqs = 0, conns = 0;
+            ds_http_stats(&reqs, &conns);
+            printf("  HTTPS 共享连接：%d 请求 / %d 次握手（复用 %d）\n",
+                   reqs, conns, reqs > conns ? reqs - conns : 0);
+        }
         print_turn_info();
         return;
     }
@@ -1695,6 +1757,8 @@ void app_main(void)
     ESP_ERROR_CHECK(board_init());
     if (storage_mount() != ESP_OK) {
         ESP_LOGW(TAG, "continuing without the TF card - utterances will be dropped");
+    } else if (memory_init() != ESP_OK) {
+        ESP_LOGW(TAG, "per-person memory unavailable - conversations will not be remembered");
     }
     ESP_ERROR_CHECK(audio_init());
     board_pa_enable(true);
@@ -1791,6 +1855,9 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "no Wi-Fi; timestamps will use uptime and SSID stays unset");
     }
+    /* The SDIO host is initialised now, so the TF card may take its own DMA
+     * buffer (see storage_reserve_dma) without starving Wi-Fi. */
+    storage_reserve_dma();
 
 
     vad_t vad;

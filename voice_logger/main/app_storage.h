@@ -13,6 +13,11 @@
 esp_err_t storage_mount(void);
 bool storage_ready(void);
 
+/* Reserves the card's DMA transfer buffer.  Call AFTER the ESP-Hosted SDIO link
+ * is up (i.e. after wifi_connect): the SDIO host needs the same DMA-capable
+ * pool during card init. */
+void storage_reserve_dma(void);
+
 /* Card-relative path of the append-only conversation index. */
 #define STORAGE_INDEX_PATH "conv/index.jsonl"
 

@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -95,6 +96,42 @@ esp_err_t storage_mount(void)
 bool storage_ready(void)
 {
     return s_ready;
+}
+
+/* Reserve one DMA-capable buffer for the card's block transfers.
+ *
+ * Without it the SDMMC driver allocates a temporary MALLOC_CAP_DMA buffer for
+ * every write; once the persistent TLS client owns a large part of the internal
+ * heap that allocation fails ("sdmmc_cmd: allocate_dma_buf: not enough mem")
+ * and the conversation WAV / JSONL record silently disappears.
+ *
+ * This must run AFTER the ESP-Hosted SDIO link is initialised: the SDIO host
+ * allocates its own aligned DMA buffer during card init, and doing this
+ * reservation first made that allocation fail ("sdio_wrapper: sdmmc_card_init
+ * failed"), which took Wi-Fi down completely.  app_main calls it right after
+ * wifi_connect(). */
+void storage_reserve_dma(void)
+{
+    if (!s_ready || !s_card || s_card->host.dma_aligned_buffer != NULL) {
+        return;
+    }
+    /* A single 512-byte block is enough for the driver to make progress; a
+     * larger buffer only reduces the number of DMA setups per write.  The
+     * DMA-capable pool is already tight after the SDIO card init, so try
+     * 4 KB, then 1 KB, then the minimum. */
+    static const size_t sizes[] = { 4096, 1024, 512 };
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        void *dma = heap_caps_malloc(sizes[i], MALLOC_CAP_DMA);
+        if (dma) {
+            s_card->host.dma_aligned_buffer = dma;
+            ESP_LOGI(TAG, "SD DMA buffer reserved: %u bytes (heap free %u)",
+                     (unsigned)heap_caps_get_allocated_size(dma),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            return;
+        }
+    }
+    ESP_LOGW(TAG, "could not reserve the SD DMA buffer; conversation records "
+                  "may fail while the cloud connection is open");
 }
 
 void storage_set_time_synced(bool synced) { s_time_synced = synced; }

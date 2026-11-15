@@ -86,6 +86,13 @@ const ds_turn_info_t *deepseek_turn_info(void);
 esp_err_t deepseek_ask(const char *user_text, char *reply_out, size_t reply_len);
 esp_err_t deepseek_ask_stream(const char *user_text, char *reply_out, size_t reply_len,
                               bool *spoken_out);
+/* Select whose conversation memory this turn belongs to (voiceprint label:
+ * an enrolled name, 人N, or "unknown").  A speaker change clears the in-RAM
+ * context and preloads that person's remembered turns from the TF card, so a
+ * recognised person is not a stranger on every boot. */
+void deepseek_set_speaker(const char *speaker);
+const char *deepseek_speaker(void);
+
 esp_err_t deepseek_check(const char *sys_prompt, const char *user_prompt,
                          char *out, size_t out_len);
 esp_err_t deepseek_judge(const char *system_prompt, const char *user_prompt,

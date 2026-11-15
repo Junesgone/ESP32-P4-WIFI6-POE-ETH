@@ -149,3 +149,10 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 # its upgrade read (esp_transport_read -135); kept off, the smaller buffer
 # alone is enough because every response here is streamed in small records.
 # CONFIG_MBEDTLS_SSL_RECORD_SIZE_LIMIT=y
+
+# --- TLS session reuse ------------------------------------------------------
+# One esp_http_client keeps the DeepSeek edge connection alive for ASR / TTS /
+# Search / Fetch (the edge answers Connection: keep-alive), and the chat SSE
+# connection - which the edge closes - resumes from a TLS session ticket
+# instead of redoing the full ~3.5 s certificate exchange on every turn.
+CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
