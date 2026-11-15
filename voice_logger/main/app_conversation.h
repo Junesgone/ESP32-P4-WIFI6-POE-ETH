@@ -39,6 +39,11 @@ void conversation_lock_cloud(void);
 void conversation_unlock_cloud(void);
 bool conversation_cloud_lock_held_by_current(void);
 
+/* Implemented in main.c: true while the microphone path is capturing the
+ * user's speech (VAD open, or inside the post-hangover resume window).  The
+ * supervisor uses it to stay quiet while the person is still talking. */
+bool voice_user_is_speaking(void);
+
 /* City used when checking weather-like claims (default 中国, stored in NVS;
  * set it with the serial command "city <name>"). */
 const char *conversation_city(void);

@@ -67,6 +67,10 @@ Behaviour highlights:
 
 - **No wake word.** "Assistant" mode answers every utterance; "hybrid" answers only
   when addressed and otherwise observes + chips in; "monitor" only records.
+- **It waits for the end of the sentence.** 1.1 s trailing silence closes an
+  utterance, then a 0.9 s resume window follows: if speech starts again the same
+  utterance is extended, so a thinking pause mid-question no longer gets an early
+  answer. Proactive interjections are suppressed while the user is talking.
 - **Proactive interjections.** After a spoken reply the board can verify claims heard
   in the room (weather, prices, dates, numbers) with a web search and say one short
   correction — gated so it never talks over a reply and never repeats itself.
@@ -99,7 +103,7 @@ Pin maps live in `voice_logger/main/board_config.h` and the board fragments unde
 
 ---
 
-## 3. Features and current state (v0.0.8)
+## 3. Features and current state (v0.0.9)
 
 | Area | State |
 |---|---|
@@ -399,7 +403,7 @@ touching the sources.
 
 ## 8. Version and releases
 
-Current version: **v0.0.8** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.9** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 

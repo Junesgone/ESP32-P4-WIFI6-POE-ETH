@@ -23,7 +23,23 @@ menu "Voice logger configuration"
 
     config VOICE_VAD_HANGOVER_MS
         int "VAD: trailing silence that closes an utterance (ms)"
-        default 700
+        default 1100
+        help
+            700 ms cut people off mid-sentence: a normal thinking pause is
+            often longer, the board treated the pause as the end of the
+            question and started answering while the person was still talking.
+            1100 ms plus the resume grace below (CONFIG_VOICE_VAD_RESUME_GRACE_MS)
+            waits about two seconds for the sentence to continue.
+
+    config VOICE_VAD_RESUME_GRACE_MS
+        int "VAD: extra window to resume a sentence after the hangover (ms)"
+        default 900
+        help
+            After the trailing-silence hangover elapses, the utterance is not
+            queued immediately: the board keeps listening for this long, and if
+            speech starts again inside the window the same utterance is
+            extended instead of producing a second turn.  This is what stops
+            "它还没听我说完就插话".
 
     config VOICE_VAD_MIN_SPEECH_MS
         int "VAD: minimum speech length to keep an utterance (ms)"
@@ -192,13 +208,13 @@ menu "Voice logger configuration"
 
     config DEEPSEEK_MAX_TOKENS
         int "Max reply tokens (per inference step)"
-        default 900
+        default 1600
         help
             The API applies this to each inference step of a round, and with
             thinking enabled the reasoning tokens are included in the output
-            count - 400 was cutting answers off with finish_reason "length"
-            once 深度思考 was on by default.  Still short: the persona asks for
-            1-3 spoken sentences.
+            count.  900 still truncated long reasoning ("finish_reason":
+            "length", no answer at all) on search-minded questions, so the
+            budget is 1600 now.  Only tokens actually generated are billed.
 
     config DEEPSEEK_TEMPERATURE_X100
         int "LLM temperature x100 (higher = more varied phrasing)"

@@ -82,7 +82,7 @@ cat > "$root/config/deepseek.defaults" <<EOF
 # Generated from config/deepseek.key - do not edit by hand.
 CONFIG_DEEPSEEK_API_KEY="$dsk"
 CONFIG_DEEPSEEK_MODEL="deepseek-flash"
-CONFIG_DEEPSEEK_MAX_TOKENS=400
+CONFIG_DEEPSEEK_MAX_TOKENS=1600
 CONFIG_DEEPSEEK_TEMPERATURE_X100=80
 EOF
 

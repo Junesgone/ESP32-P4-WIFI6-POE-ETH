@@ -29,9 +29,14 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # Room noise floor measured at rms 20-130; real speech peaks 2500-5600.
 # 600 let 600-680 noise blips through, so the gate sits at 800.
 CONFIG_VOICE_VAD_START_RMS=800
-CONFIG_VOICE_VAD_HANGOVER_MS=700
+# 1100 ms hangover + 900 ms resume grace: a person pausing to think mid-question
+# no longer gets answered mid-sentence (the board waits ~2 s for the sentence to
+# continue, and extends the same utterance if it does).
+CONFIG_VOICE_VAD_HANGOVER_MS=1100
+CONFIG_VOICE_VAD_RESUME_GRACE_MS=900
 CONFIG_VOICE_VAD_MIN_SPEECH_MS=300
-CONFIG_VOICE_VAD_MAX_UTTERANCE_MS=20000
+# Longer than before because resumed sentences are merged into one utterance.
+CONFIG_VOICE_VAD_MAX_UTTERANCE_MS=30000
 CONFIG_VOICE_PREROLL_MS=300
 # Local replay of the captured utterance was a debug aid from before the TTS
 # existed.  It made the board repeat the user verbatim (rms 5067 at the mic),
@@ -156,3 +161,7 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
 # connection - which the edge closes - resumes from a TLS session ticket
 # instead of redoing the full ~3.5 s certificate exchange on every turn.
 CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
+
+# Thinking tokens count against max_tokens; 400/900 truncated long reasoning
+# on search questions (finish_reason "length", no answer at all).
+CONFIG_DEEPSEEK_MAX_TOKENS=1600

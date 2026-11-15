@@ -538,6 +538,26 @@ static void utterance_worker(void *arg)
 
 /* One mono frame's worth of VAD bookkeeping, shared by the plain I2S path and
  * the AEC path so the two cannot drift apart. */
+/* After the VAD says "the utterance is over", keep listening for a short grace
+ * window before queueing it.  People pause to think in the middle of a sentence
+ * far longer than the trailing-silence hangover; answering that pause is what
+ * felt like 小新 插话.  If speech resumes inside the window the SAME utterance is
+ * extended (its audio is still in s_utt/s_utt_raw), so the board hears one long
+ * question and answers once, after the person is really done. */
+static volatile bool s_user_speaking;  /* VAD open or inside the resume grace */
+
+/* Read by the conversation supervisor: it must never interject while the user
+ * is still talking (that was the other half of "还没说完就插话"). */
+bool voice_user_is_speaking(void)
+{
+    return s_user_speaking;
+}
+
+static bool    s_grace_waiting;      /* utterance closed, grace window running */
+static bool    s_grace_resume;       /* speech came back inside the window */
+static int64_t s_grace_deadline_us;
+static int     s_resume_confirm;     /* consecutive speech frames inside grace */
+
 static void feed_vad_frame(vad_t *vad, const int16_t *mono, size_t n,
                            const int16_t *raw, size_t raw_n, int64_t *last_report_us)
 {
@@ -545,7 +565,44 @@ static void feed_vad_frame(vad_t *vad, const int16_t *mono, size_t n,
     int rms = 0;
     vad_event_t ev = vad_feed(vad, mono, n, &rms);
     bool now = vad_in_speech(vad);
+    int64_t now_us = esp_timer_get_time();
+    int gate = vad_threshold(vad);
 
+    if (s_grace_waiting) {
+        if (now) {
+            /* Require 40 ms of speech before extending: single-frame room
+             * noises must not keep a finished question open forever. */
+            s_resume_confirm++;
+            if (s_resume_confirm < 2) {
+                preroll_push(mono, n, raw, raw_n);
+                return;
+            }
+            /* The person was only pausing: swallow this new onset into the
+             * utterance that was about to be queued. */
+            s_grace_waiting = false;
+            s_grace_resume = true;
+            s_resume_confirm = 0;
+            utt_append(mono, n, raw, raw_n);
+            if (rms > s_rms_peak) {
+                s_rms_peak = rms;
+            }
+            ESP_LOGI(TAG, "speech resumed within the grace window (rms=%d); "
+                          "extending the same utterance", rms);
+            return;
+        }
+        s_resume_confirm = 0;
+        if (now_us >= s_grace_deadline_us) {
+            s_grace_waiting = false;
+            ESP_LOGI(TAG, "utterance finished (grace expired); queueing");
+            enqueue_utterance();
+            return;
+        }
+        /* Still inside the window and quiet: keep the preroll rolling so a
+         * resumed onset still has 300 ms of context, but leave the utterance
+         * buffer untouched (it must stay exactly as it was closed). */
+        preroll_push(mono, n, raw, raw_n);
+        return;
+    }
 
     if (was) {
         utt_append(mono, n, raw, raw_n);
@@ -553,15 +610,25 @@ static void feed_vad_frame(vad_t *vad, const int16_t *mono, size_t n,
             s_rms_peak = rms;
         }
     } else if (now) {
-        s_utt_len = 0;
-        s_utt_raw_len = 0;
-        s_rms_peak = rms;
-        utt_seed_from_preroll();
-        utt_append(mono, n, raw, raw_n);
-        ESP_LOGI(TAG, "speech detected (rms=%d, gate=%d)", rms, vad_threshold(vad));
+        if (s_grace_resume) {
+            /* continuing the same utterance after a pause: no reset, the audio
+             * before the pause is already in the buffer */
+            s_grace_resume = false;
+            utt_append(mono, n, raw, raw_n);
+            if (rms > s_rms_peak) {
+                s_rms_peak = rms;
+            }
+            ESP_LOGI(TAG, "speech resumed (rms=%d); continuing the utterance", rms);
+        } else {
+            s_utt_len = 0;
+            s_utt_raw_len = 0;
+            s_rms_peak = rms;
+            utt_seed_from_preroll();
+            utt_append(mono, n, raw, raw_n);
+            ESP_LOGI(TAG, "speech detected (rms=%d, gate=%d)", rms, gate);
+        }
     } else {
         preroll_push(mono, n, raw, raw_n);
-        int64_t now_us = esp_timer_get_time();
         if (now_us - *last_report_us > 5000000) {
             *last_report_us = now_us;
             ESP_LOGI(TAG, "idle  rms=%d  (open above %d)  wifi=%s  sd=%s",
@@ -572,8 +639,14 @@ static void feed_vad_frame(vad_t *vad, const int16_t *mono, size_t n,
     }
 
     if (ev == VAD_EVENT_UTTERANCE_DONE) {
-        enqueue_utterance();
+        /* Do not answer yet: open the resume window. */
+        s_grace_waiting = true;
+        s_resume_confirm = 0;
+        s_grace_deadline_us = now_us + (int64_t)CONFIG_VOICE_VAD_RESUME_GRACE_MS * 1000;
+        ESP_LOGI(TAG, "utterance closed; waiting %d ms in case the sentence continues",
+                 CONFIG_VOICE_VAD_RESUME_GRACE_MS);
     }
+    s_user_speaking = now || s_grace_waiting;
 }
 
 #if CONFIG_VOICE_AEC

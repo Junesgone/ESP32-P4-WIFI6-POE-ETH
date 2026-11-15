@@ -315,6 +315,12 @@ static int conversation_eval_locked(bool force, char *say, size_t say_len)
     if (s_count == 0) {
         return 0;
     }
+    /* Never chip in while the person is still talking: the supervisor runs
+     * between turns, but a long question with pauses used to let it fire
+     * mid-sentence. */
+    if (!force && voice_user_is_speaking()) {
+        return 0;
+    }
     int64_t now = esp_timer_get_time();
     if (!force && (now - s_last_interject_us) < CONV_COOLDOWN_US) {
         return 0;
@@ -433,7 +439,7 @@ int conversation_eval_once(bool force, char *say, size_t say_len)
     /* A reply turn may have started while we waited for the lock; judging now
      * would use a stale transcript and delay the answer in flight. */
     int r;
-    if (!force && (s_turn_active > 0 || tts_speaking())) {
+    if (!force && (s_turn_active > 0 || tts_speaking() || voice_user_is_speaking())) {
         r = 0;
     } else {
         r = conversation_eval_locked(force, say, say_len);
