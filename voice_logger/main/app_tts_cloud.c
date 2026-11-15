@@ -914,7 +914,10 @@ static esp_err_t ws_stream(pcm_pipe_t *p, const char *utf8_text)
         .uri = url,
         .headers = auth,
         .disable_auto_reconnect = true,
-        .network_timeout_ms = 10000,
+        /* 10 s made every failed WebSocket attempt cost ~11 s before the POST
+         * fallback could start; the TCP+TLS+upgrade either completes in ~0.5 s
+         * on this link or it is not going to. */
+        .network_timeout_ms = 4000,
         .buffer_size = WS_RX_BUFFER,
         .task_stack = WS_TASK_STACK,
         .crt_bundle_attach = deepseek_tls_attach,
@@ -1079,14 +1082,33 @@ esp_err_t tts_cloud_stream(const char *utf8_text, tts_cloud_sink_t sink, void *c
     const char *path;
     esp_err_t err;
 #if CONFIG_VOICE_TTS_WS
-    path = "ws";
-    err = ws_stream(p, utf8_text);
-    if (p->out_samples == 0 && p->sink_err == ESP_OK && ws_may_fallback()) {
-        ESP_LOGW(TAG, "WS TTS failed (%s) after %lld ms - retrying with the POST stream",
-                 esp_err_to_name(err), (long long)((esp_timer_get_time() - t0) / 1000));
-        pipe_reset(p, sink, ctx, t0);   /* one TLS session at a time: WS is closed now */
-        path = "http-fallback";
+    /* The WebSocket transport on this board still fails its TLS handshake /
+     * upgrade read intermittently (esp_transport_read -135 / certificate chain
+     * under PSA memory pressure).  Waiting for it on every sentence costs the
+     * user several seconds, so after two consecutive failures the POST stream
+     * is used directly for five minutes and the WS path is probed again later. */
+    static int s_ws_fail_streak;
+    static int64_t s_ws_skip_until_us;
+    if (esp_timer_get_time() < s_ws_skip_until_us) {
+        path = "http";
         err = http_stream(p, utf8_text);
+    } else {
+        path = "ws";
+        err = ws_stream(p, utf8_text);
+        if (p->out_samples > 0) {
+            s_ws_fail_streak = 0;
+        } else if (p->sink_err == ESP_OK && ws_may_fallback()) {
+            s_ws_fail_streak++;
+            if (s_ws_fail_streak >= 2) {
+                s_ws_skip_until_us = esp_timer_get_time() + 300LL * 1000000;
+                ESP_LOGW(TAG, "WS TTS failed twice in a row; using the POST stream for 5 min");
+            }
+            ESP_LOGW(TAG, "WS TTS failed (%s) after %lld ms - retrying with the POST stream",
+                     esp_err_to_name(err), (long long)((esp_timer_get_time() - t0) / 1000));
+            pipe_reset(p, sink, ctx, t0);   /* one TLS session at a time: WS is closed now */
+            path = "http-fallback";
+            err = http_stream(p, utf8_text);
+        }
     }
 #else
     path = "http";

@@ -343,15 +343,24 @@ menu "Voice logger configuration"
             Turn this off to use the batch request.
 
     config VOICE_TTS_WS
-        bool "Use the WebSocket streaming TTS protocol"
-        default y
+        bool "Use the WebSocket streaming TTS protocol (experimental)"
+        default n
         help
             Connect to wss://api.deepseek.com/v1/tools/tts, send the reply text
-            as {\"event\":\"text\"} messages followed by {\"event\":\"finish_text\"},
+            as {"event":"text"} messages followed by {"event":"finish_text"},
             and play the binary PCM frames as they arrive.  The server sends
             raw 16-bit mono PCM at 24 kHz; the board resamples to 16 kHz for the
-            ES8311 path.  When this is off, or the WebSocket handshake fails,
-            the same endpoint is used with a streaming POST (format=pcm).
+            ES8311 path.
+
+            OFF by default: measured on this board the WebSocket path gives no
+            latency advantage over the streaming POST (the service sends no
+            audio before finish_text on either transport), and the
+            esp_websocket_client handshake still fails intermittently
+            (esp_transport_read -135 / connect timeout) while its TLS session
+            fits worse in the internal RAM.  The streaming POST with
+            format=pcm is the default and works.  When this is enabled the
+            firmware tries WebSocket first and falls back to POST after a
+            failed attempt (with a 5 minute backoff after two failures).
 
     config TTS_API_KEY
         string "TTS API key (empty = reuse the DeepSeek key)"

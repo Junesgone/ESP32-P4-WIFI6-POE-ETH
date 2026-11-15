@@ -130,6 +130,7 @@ static bool ds_root_pinned(const mbedtls_x509_crt *crt)
     static const char cn[] = "DigiCert Global Root G2";
     if (crt->serial.len != sizeof(serial) ||
         memcmp(crt->serial.p, serial, sizeof(serial)) != 0) {
+        ESP_LOGW(TAG, "root pin: serial mismatch (len %u)", (unsigned)crt->serial.len);
         return false;
     }
     const unsigned char *p = crt->subject_raw.p;
@@ -139,6 +140,7 @@ static bool ds_root_pinned(const mbedtls_x509_crt *crt)
             return true;
         }
     }
+    ESP_LOGW(TAG, "root pin: CN not found in subject_raw (%u bytes)", (unsigned)n);
     return false;
 }
 
@@ -168,6 +170,9 @@ static int ds_verify_cb(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *f
         ESP_LOGE(TAG, "certificate rejected at depth %d (flags 0x%x)", depth, (unsigned)before);
         ds_log_cn(&crt->subject_raw);
         ds_log_serial(crt);
+    } else if (before != *flags) {
+        ESP_LOGW(TAG, "certificate accepted at depth %d after clearing flags 0x%x", depth,
+                 (unsigned)(before & ~*flags));
     }
     return r;
 }

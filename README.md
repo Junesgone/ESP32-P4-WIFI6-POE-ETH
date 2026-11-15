@@ -289,18 +289,32 @@ arrive. A streaming `POST /v1/tools/tts` with `format:"pcm"` is the fallback if 
 WebSocket cannot be established; the on-board ESP-SR engine remains the offline
 fallback. Voices: **stella** (female, default) and **tide** (male).
 
-Both synthesis paths stream: playback starts while the audio is still arriving
-(measured on hardware: HTTP streaming POST, 391 characters -> 29 s of audio in
-11.6 s wall time, first audio 5.3 s after the request, zero playback starvations
-from the PSRAM jitter buffer). The WebSocket handshake itself is currently not
-reliable on this board: every attempt so far fails the TLS certificate chain
-check inside the ESP-IDF WebSocket transport (`MBEDTLS_ERR_X509_CERT_VERIFY_FAILED`
-on the DigiCert root link, the same PSA/memory-related chain-builder failure that
-the chat path works around with a pinned certificate), so the firmware falls back
-to the streaming POST after ~0.2 s. The WS code path is complete and stays
-enabled (CONFIG_VOICE_TTS_WS) for when the root cause is fixed.
+The streaming **POST is the default**; the WebSocket path is complete but marked
+experimental (`CONFIG_VOICE_TTS_WS`, off by default). Measured on this board both
+transports deliver audio at the same time - the service does not start sending
+audio before `finish_text` - while the esp_websocket_client handshake still fails
+intermittently (`esp_transport_read -135` / connect timeout), so the POST avoids
+a multi-second stall per reply. With the POST: connect 3.1-3.9 s, first audio
+4.3-5.2 s, then playback starts while the rest is still arriving (351 characters
+-> 7.3 s of audio, zero playback starvations from the PSRAM jitter buffer). If
+the WebSocket is enabled the firmware tries it first, then falls back to POST and
+backs off for 5 minutes after two consecutive failures.
 
-### 6.4 Spoken-answer length and volume
+### 6.4 Measured voice-turn latency (firmware 0.0.7)
+
+| Stage | Time | Note |
+|---|---|---|
+| ASR (`/v1/tools/asr`) | 4.2 s | ~3.5 s of that is the TLS handshake |
+| Chat first answer token | 3.2-4.6 s | thinking enabled |
+| TTS connect + first audio | 3.1 s + 1.2-2 s | streaming POST, `format:"pcm"` |
+| Spoken reply playback | 1-8 s | streamed from the PSRAM jitter buffer, 0 starvation |
+
+Every cloud call uses its own TLS session (: one mbedTLS session at a time on this
+board), so three handshakes per turn dominate the delay. Standalone Search API:
+4.2 s per call on the board vs 0.5 s from a PC - again the handshake. Keeping a
+TLS session alive between the ASR / chat / TTS calls is the next latency lever.
+
+### 6.5 Spoken-answer length and volume
 
 A deep-thinking search turn answers with 300-400 characters -- formatted like the
 Chat App would render it. Reading all of that kept the speaker busy for 20-30 s
@@ -311,7 +325,7 @@ full text still goes to the console and the TF-card JSONL record. The boot volum
 is 50 (0-100) because 90 fed the on-board microphone through the on-board
 speaker and made the VAD hear the assistant itself.
 
-### 6.5 Configuration
+### 6.6 Configuration
 
 All switches live in `menuconfig → Voice logger configuration → DeepSeek` and
 `→ Cloud neural TTS`, and can be flipped at runtime from the serial console
@@ -343,7 +357,7 @@ touching the sources.
 
 ## 8. Version and releases
 
-Current version: **v0.0.6** — see [CHANGELOG.md](CHANGELOG.md) and
+Current version: **v0.0.7** — see [CHANGELOG.md](CHANGELOG.md) and
 [GitHub Releases](https://github.com/Junesgone/ESP32-P4-WIFI6-POE-ETH/releases).
 The firmware reports its version in the boot banner (`App version`).
 

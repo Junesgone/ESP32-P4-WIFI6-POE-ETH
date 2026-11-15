@@ -4,7 +4,55 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## v0.0.6 — 2026-11-14
+## v0.0.7 — 2026-11-15
+
+Live microphone fixes: the voice path had stopped answering spoken input, and
+the TLS handshakes did not fit next to the audio pipeline.
+
+### Fixed
+
+- **The board stopped answering any spoken question.** The utterance worker
+  already takes the cloud lock around a whole turn; v0.0.6 took the same
+  non-recursive mutex a second time inside the turn, so the first clip deadlocked
+  the worker (and every later clip just piled up in the capture queue while the
+  lock stayed held). The second take is gone; the lock is taken exactly once per
+  turn. Verified on hardware with the on-board microphone: "小新你好，请用一句话
+  介绍一下你自己" -> "你好呀，我是小新，就住在这个家里的语音助手…" spoken back.
+- **TLS handshakes failed with `mbedtls_ssl_setup -0x008D` /
+  `PSA signature verification failed (-141)`** once the AFE/esp-dl pipeline was
+  live: the 16 KB mbedTLS input buffer left too little internal RAM for the
+  certificate/signature work. The TLS record buffers are now 8 KB in / 2 KB out,
+  which fixed both errors (search, ASR, chat and TTS all complete their
+  handshakes now).
+- WebSocket TTS no longer stalls a reply: the connect timeout is 4 s, and after
+  two consecutive failures the streaming POST is used directly for 5 minutes
+  before the WebSocket is probed again.
+
+### Changed
+
+- WebSocket TTS is now **off by default** (`CONFIG_VOICE_TTS_WS`). Measured on
+  this board it gives no latency advantage over the streaming POST - the
+  service sends no audio before `finish_text` on either transport - and the
+  esp_websocket_client handshake still fails intermittently
+  (`esp_transport_read -135` / connect timeout). The streaming POST with
+  `format:"pcm"` is the default and works: measured 3.1-3.9 s to connect,
+  first audio 4.3-5.2 s, playback starved 0 ms.
+- Certificate verifier diagnostics: a non-zero verify flag at any depth is now
+  logged with subject/serial, and the DigiCert root pin logs why it did not
+  match. The Root G2 seen in the chain has a 99-byte subject that does not carry
+  the expected CN string, so the bundle callback (which now succeeds) handles it.
+- Firmware version 0.0.7.
+
+### Measured on hardware (firmware 0.0.7)
+
+A spoken question -> spoken answer turn: ASR 4.2 s (of which ~3.5 s is the TLS
+handshake), LLM 3.4 s, TTS 3.1 s to connect + first audio 4.3 s, then the reply
+is played. Everything is serialised on one TLS session at a time by design.
+Standalone Search API: 4.2 s per call on the board (0.5 s from a PC), again
+dominated by the handshake. Keeping a TLS session alive between the ASR / chat /
+TTS calls is the next latency lever.
+
+
 
 DeepSeek full-suite release: the whole DeepSeek App conversation stack now runs
 on the board through the new application APIs — no third-party LLM/ASR/TTS vendor

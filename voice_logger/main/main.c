@@ -279,14 +279,11 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
     char text[768] = { 0 };
     char reply[3072] = { 0 };
 
-    /* Serialise the whole cloud part of the turn (ASR + LLM + reply TTS) with
-     * the console commands and the supervisor.  This used to be missing here
-     * only: two concurrent mbedTLS sessions do not fit on this board, and the
-     * second one failed inside mbedtls_ssl_setup with -0x008D
-     * (PSA_ERROR_INSUFFICIENT_MEMORY), i.e. "Connection failed, sock < 0".
-     * tts_say() detects that this task already holds the lock and does not
-     * take it twice. */
-    conversation_lock_cloud();
+    /* NOTE: the cloud lock is already held by utterance_worker() around this
+     * whole call.  It must NOT be taken here again: the mutex is not recursive,
+     * and doing so deadlocked the utterance worker on its first clip (the
+     * board then stopped answering any spoken input while the lock stayed held
+     * forever).  tts_say() checks the holder and does not re-take it. */
     esp_err_t asr_err = ESP_FAIL;
     if (asr_configured() && !s_asr_disabled) {
         int64_t asr_t0 = esp_timer_get_time();
@@ -386,8 +383,6 @@ static void process_utterance(const int16_t *pcm, size_t pcm_len,
         ESP_LOGW(TAG, "no transcript (ASR key set? network up?)");
     }
 
-
-    conversation_unlock_cloud();
 
     {
         static char meta[768];
